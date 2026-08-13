@@ -30,5 +30,3 @@ Microcontroller.
 
 Futuristic use case: surgical table where all the instruments communicate with
 each other to ensure every instrument is accounted for as per requirement.
-
-Link to Team Document: https://docs.google.com/document/d/19RqaYufeFFk6hA1eFMow5Z64eq9CfbrHeWhWcveoaoM/edit?tab=t.0
