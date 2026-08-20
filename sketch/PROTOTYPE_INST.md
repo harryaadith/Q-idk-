@@ -26,3 +26,9 @@ Two `bricks` each with its own collection of sensors running fully independently
 | RGB LED – common      |    GND     |
 
 NOTE - Within the sketch of each brick, change `BRICK_ID`
+
+## INSTRUCTIONS FOR ESPNOW CODE
+1. Open the sketch in Arduino IDE and select your ESP32 board and USB port.
+2. Set `BRICK_ID` to `1` on the first ESP and `2` on the second; keep `WIFI_CHANNEL` the same.
+3. Upload the sketch to both ESPs.
+4. Open both Serial Monitors at **115200 baud**; each ESP should send and display packets received from the other.
