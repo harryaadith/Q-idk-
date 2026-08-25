@@ -1,8 +1,8 @@
 # Project Title
 
 ### Team Details
-- Team Number: <Enter team number>
-- Team Name: <Enter team name>
+- Team Number: 22
+- Team Name: (Q)idk if i'm getting an internship
 - Course/Module: <Enter course name>
 
 ---
