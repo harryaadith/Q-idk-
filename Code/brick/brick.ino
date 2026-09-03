@@ -2,7 +2,7 @@
  * ======================================================================================
  * Project: Multi-Agent Microbots (Smart Bricks) — Unified Firmware
  * File:    brick.ino
- * Target:  ESP32 Dev Module (4-Brick Swarm Deployment)
+ * Target:  ESP32 Dev Module (Compatible with 30-Pin & 38-Pin Boards: All Pins <= 35)
  * Author:  Team 22 (Electronic System Workshop)
  *
  * Description:
@@ -16,10 +16,15 @@
  *      - Otherwise, blinks BLUE then RED in order of neighbor count (solid RED if 0).
  *      - Solid BLUE when docked / close to all neighbors.
  *  5. RFID reader (MFRC522) via VSPI tracking neighbor IDs and token presence.
- *  6. Future TODO integration stubs for:
- *      - 4x Directional IR sensors (North, East, South, West)
- *      - 9-DoF IMU + Magnetometer (I2C) for self-orientation
- *      - Haptic Vibrator Motor Actuator
+ *  6. 4-Face Directional IR Sensors (North=34, East=35, South=32, West=33) for docking.
+ *  7. Audio Buzzer (GPIO 27) for acoustic feedback:
+ *      - RFID read confirmation chirp
+ *      - Physical face docking & undocking chime
+ *      - Proximity consensus alert
+ *      - System boot chime
+ *  8. Future integration stubs:
+ *      - 9-DoF IMU + Magnetometer (I2C: GPIO 21, 22) for self-orientation
+ *      - Haptic Vibrator Motor Actuator (GPIO 26)
  * ======================================================================================
  */
 
@@ -46,6 +51,14 @@
 // RFID Settings
 #define RFID_GREEN_HOLD_MS    2000     // How long RGB LED stays Green after RFID detection
 
+// IR Sensor Settings
+#define IR_ACTIVE_LOW         true     // Standard LM393 IR obstacle sensors output LOW on reflection
+#define IR_POLL_INTERVAL_MS   60       // Polling frequency for 4-face IR sensors
+#define IR_DEBOUNCE_COUNT     2        // Consecutive readings required to confirm state transition
+
+// Audio Buzzer Settings
+#define BUZZER_ENABLED        true     // Master toggle for acoustic buzzer feedback
+
 // LED Animation Timings (in milliseconds)
 #define BLINK_BLUE_ON_MS      220      // Blue pulse duration
 #define BLINK_BLUE_OFF_MS     180      // Gap between Blue pulses
@@ -56,7 +69,7 @@
 #define REQUIRE_ALL_SWARM_FOR_ONBOARD false
 
 // ======================================================================================
-// 2. HARDWARE PIN DEFINITIONS
+// 2. HARDWARE PIN DEFINITIONS (All pins strictly <= 35 for 30-pin board compatibility)
 // ======================================================================================
 // On-board LED (ESP32 Dev Module built-in blue LED)
 #define PIN_ONBOARD_LED       2
@@ -70,21 +83,24 @@
 #define PIN_RFID_SS           5
 #define PIN_RFID_RST          4
 
-// --------------------------------------------------------------------------------------
-// FUTURE EXPANSION PINS (TODO: Documented and allocated for future revisions)
-// --------------------------------------------------------------------------------------
-// 4 Directional IR Phototransistors / Demodulated Receivers (Input-only GPIOs)
-#define PIN_IR_NORTH          34
-#define PIN_IR_EAST           35
-#define PIN_IR_SOUTH          36
-#define PIN_IR_WEST           39
+// 4 Directional IR Proximity / Obstacle Sensors (North, East, South, West)
+#define PIN_IR_NORTH          34       // North / Top face sensor (D34)
+#define PIN_IR_EAST           35       // East / Right face sensor (D35)
+#define PIN_IR_SOUTH          32       // South / Bottom face sensor (D32)
+#define PIN_IR_WEST           33       // West / Left face sensor (D33)
 
+// Audio Buzzer (Active or driven passive buzzer)
+#define PIN_BUZZER            27       // Driven via GPIO 27 (D27)
+
+// --------------------------------------------------------------------------------------
+// FUTURE EXPANSION PINS (Reserved for upcoming roadmap modules)
+// --------------------------------------------------------------------------------------
 // IMU + Magnetometer (I2C Bus: MPU6050/9250 or BNO055)
 #define PIN_I2C_SDA           21
 #define PIN_I2C_SCL           22
 
 // Haptic Vibrator Motor Actuator (Transistor / MOSFET gate)
-#define PIN_VIBRATOR_MOTOR    32
+#define PIN_VIBRATOR_MOTOR    26
 
 // ======================================================================================
 // 3. PACKET DEFINITION & DATA STRUCTURES
@@ -108,16 +124,33 @@ struct PeerInfo {
 // Peer records: indices 1 to TOTAL_SWARM_BRICKS
 PeerInfo peers[TOTAL_SWARM_BRICKS + 1];
 
+// Cardinal face indices and labels
+enum Face {
+  FACE_NORTH = 0,
+  FACE_EAST  = 1,
+  FACE_SOUTH = 2,
+  FACE_WEST  = 3
+};
+const char* FACE_NAMES[] = {"NORTH", "EAST", "SOUTH", "WEST"};
+const uint8_t IR_PINS[]  = {PIN_IR_NORTH, PIN_IR_EAST, PIN_IR_SOUTH, PIN_IR_WEST};
+
+// Directional IR State Tracking
+bool irFaceDetected[4]      = {false, false, false, false};
+bool prevIrFaceDetected[4]  = {false, false, false, false};
+uint8_t irDebounceCounters[4] = {0, 0, 0, 0};
+uint32_t lastIrPollTime     = 0;
+
 // Hardware Instances
 MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
 uint8_t broadcastAddress[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // Operational State Variables
-uint32_t lastBroadcastTime = 0;
-uint32_t lastDebugPrintTime = 0;
-uint32_t rfidDetectedTime = 0;
-bool     rfidActive = false;
-String   lastReadUid = "";
+uint32_t lastBroadcastTime   = 0;
+uint32_t lastDebugPrintTime  = 0;
+uint32_t rfidDetectedTime    = 0;
+bool     rfidActive          = false;
+String   lastReadUid         = "";
+bool     prevCloseToAll      = false;
 
 // Known neighbor RFID Card UIDs (Customizable for physical microbot tokens)
 struct KnownTag {
@@ -133,10 +166,111 @@ const KnownTag KNOWN_TAGS[] = {
 const size_t KNOWN_TAGS_COUNT = sizeof(KNOWN_TAGS) / sizeof(KNOWN_TAGS[0]);
 
 // ======================================================================================
-// 4. FUTURE EXPANSION TODO STUBS
+// 4. LOW-LEVEL HARDWARE DRIVERS (Buzzer, LEDs, IR)
 // ======================================================================================
-// Flags to enable/disable future hardware features
-bool enableIrSensors = false;
+
+// Set External Common-Cathode RGB LED Color
+void setRgbColor(bool r, bool g, bool b) {
+  digitalWrite(PIN_LED_RED,   r ? HIGH : LOW);
+  digitalWrite(PIN_LED_GREEN, g ? HIGH : LOW);
+  digitalWrite(PIN_LED_BLUE,  b ? HIGH : LOW);
+}
+
+// Set On-Board Status LED
+void setOnboardLed(bool state) {
+  digitalWrite(PIN_ONBOARD_LED, state ? HIGH : LOW);
+}
+
+// Base Buzzer Pulse
+void buzzBeep(uint16_t duration_ms) {
+#if BUZZER_ENABLED
+  digitalWrite(PIN_BUZZER, HIGH);
+  delay(duration_ms);
+  digitalWrite(PIN_BUZZER, LOW);
+#endif
+}
+
+// Sound Profile: RFID Scan Success (Happy double-chirp)
+void buzzRfidSuccess() {
+#if BUZZER_ENABLED
+  buzzBeep(60);
+  delay(40);
+  buzzBeep(100);
+#endif
+}
+
+// Sound Profile: Physical Docking / Close-to-All Consensus (Ascending chime)
+void buzzDockChime() {
+#if BUZZER_ENABLED
+  buzzBeep(40);
+  delay(30);
+  buzzBeep(80);
+#endif
+}
+
+// Sound Profile: Undock / Disconnect Event (Single short alert tone)
+void buzzUndockChime() {
+#if BUZZER_ENABLED
+  buzzBeep(120);
+#endif
+}
+
+// Sound Profile: Boot Startup Melodic Chime
+void buzzBootChime() {
+#if BUZZER_ENABLED
+  buzzBeep(50);
+  delay(40);
+  buzzBeep(50);
+  delay(40);
+  buzzBeep(120);
+#endif
+}
+
+// ======================================================================================
+// 5. DIRECTIONAL IR SENSOR SCANNING & FACE DOCKING
+// ======================================================================================
+int getDockedFaceCount() {
+  int count = 0;
+  for (int i = 0; i < 4; i++) {
+    if (irFaceDetected[i]) count++;
+  }
+  return count;
+}
+
+void checkIrSensors() {
+  uint32_t now = millis();
+  if (now - lastIrPollTime < IR_POLL_INTERVAL_MS) return;
+  lastIrPollTime = now;
+
+  for (int i = 0; i < 4; i++) {
+    int raw = digitalRead(IR_PINS[i]);
+    bool detected = IR_ACTIVE_LOW ? (raw == LOW) : (raw == HIGH);
+
+    if (detected == irFaceDetected[i]) {
+      // Reset debounce counter if state matches current stable state
+      irDebounceCounters[i] = 0;
+    } else {
+      irDebounceCounters[i]++;
+      if (irDebounceCounters[i] >= IR_DEBOUNCE_COUNT) {
+        // Confirmed state change!
+        irFaceDetected[i] = detected;
+        irDebounceCounters[i] = 0;
+
+        if (detected) {
+          Serial.printf("[IR] >>> FACE DOCKED: %s face detected adjacent brick! <<<\n", FACE_NAMES[i]);
+          buzzDockChime();
+        } else {
+          Serial.printf("[IR] <<< FACE UNDOCKED: %s face cleared. <<<\n", FACE_NAMES[i]);
+          buzzUndockChime();
+        }
+      }
+    }
+  }
+}
+
+// ======================================================================================
+// 6. FUTURE EXPANSION TODO STUBS
+// ======================================================================================
 bool enableImuOrientation = false;
 bool enableVibratorMotor = false;
 
@@ -147,34 +281,20 @@ struct SwarmOrientation {
 };
 SwarmOrientation currentOrientation = {0.0f, 0.0f, 0.0f};
 
-// Directional face docking matrix (North, East, South, West)
-uint8_t irDockedFaces[4] = {0, 0, 0, 0};
-
 void initFutureHardware() {
   /*
    * FUTURE TODO:
-   * 1. Initialize Directional IR phototransistors on GPIO 34, 35, 36, 39
-   * 2. Initialize Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL) and configure IMU/Magnetometer
-   * 3. Initialize Vibrator Motor PWM/digital pin on GPIO 32
+   * 1. Initialize Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL) and configure IMU/Magnetometer
+   * 2. Initialize Vibrator Motor PWM/digital pin on GPIO 26
    */
-  pinMode(PIN_IR_NORTH, INPUT);
-  pinMode(PIN_IR_EAST, INPUT);
-  pinMode(PIN_IR_SOUTH, INPUT);
-  pinMode(PIN_IR_WEST, INPUT);
   pinMode(PIN_VIBRATOR_MOTOR, OUTPUT);
   digitalWrite(PIN_VIBRATOR_MOTOR, LOW);
 }
 
 void triggerHapticFeedback(uint16_t duration_ms) {
-  // FUTURE TODO: Trigger haptic feedback when docking, receiving neighbor, or reading RFID
   digitalWrite(PIN_VIBRATOR_MOTOR, HIGH);
   delay(duration_ms);
   digitalWrite(PIN_VIBRATOR_MOTOR, LOW);
-}
-
-void updateIrDirectionDetection() {
-  // FUTURE TODO: Read IR receivers to determine relative spatial orientation of neighbors
-  // e.g. digitalRead(PIN_IR_NORTH), etc.
 }
 
 void updateImuSelfOrientation() {
@@ -182,20 +302,7 @@ void updateImuSelfOrientation() {
 }
 
 // ======================================================================================
-// 5. LOW-LEVEL HARDWARE DRIVERS (RGB & On-Board LED)
-// ======================================================================================
-void setRgbColor(bool r, bool g, bool b) {
-  digitalWrite(PIN_LED_RED,   r ? HIGH : LOW);
-  digitalWrite(PIN_LED_GREEN, g ? HIGH : LOW);
-  digitalWrite(PIN_LED_BLUE,  b ? HIGH : LOW);
-}
-
-void setOnboardLed(bool state) {
-  digitalWrite(PIN_ONBOARD_LED, state ? HIGH : LOW);
-}
-
-// ======================================================================================
-// 6. SWARM TOPOLOGY & PROXIMITY EVALUATION
+// 7. SWARM TOPOLOGY & PROXIMITY EVALUATION
 // ======================================================================================
 
 // Count total currently active peers (seen within PEER_TIMEOUT_MS)
@@ -272,21 +379,18 @@ void evaluateProximity(uint8_t id, int8_t rssi) {
 }
 
 // ======================================================================================
-// 7. LED ANIMATION STATE MACHINE
+// 8. LED ANIMATION STATE MACHINE
 // ======================================================================================
-/*
- * Rules from requirements:
- * 1. If close to all neighbours -> Light On-Board LED.
- * 2. When RFID of a neighbour read -> Light Green LED of the RGB LED.
- * 3. Else -> go Blue then Red in order of neighbour count:
- *     - If count == 0: Solid Red.
- *     - If count > 0: Sequentially pulses Blue (N times = count), followed by Red.
- *     - If close to all neighbours: Solid Blue on RGB LED while On-Board LED is illuminated.
- */
 void updateLedStates() {
   uint32_t now = millis();
   bool closeToAll = isCloseToAllNeighbors();
   int neighborCount = getActiveNeighborCount();
+
+  // Edge detection for full proximity consensus chime
+  if (closeToAll && !prevCloseToAll) {
+    buzzDockChime();
+  }
+  prevCloseToAll = closeToAll;
 
   // 1. On-Board LED control: Lights when close to all active neighbors
   setOnboardLed(closeToAll);
@@ -316,7 +420,6 @@ void updateLedStates() {
   }
 
   // Dynamic Sequential Sequence: Blinks Blue N times (N = neighborCount), then 1 Red pulse
-  // Total cycle duration calculation:
   uint32_t bluePhaseDuration = neighborCount * (BLINK_BLUE_ON_MS + BLINK_BLUE_OFF_MS);
   uint32_t totalCycleDuration = bluePhaseDuration + BLINK_RED_ON_MS + BLINK_CYCLE_PAUSE_MS;
   uint32_t cycleTime = now % totalCycleDuration;
@@ -339,14 +442,12 @@ void updateLedStates() {
 }
 
 // ======================================================================================
-// 8. RFID SCANNING & IDENTIFICATION
+// 9. RFID SCANNING & IDENTIFICATION
 // ======================================================================================
 void checkRfidReader() {
-  // Check for new card presence
   if (!rfid.PICC_IsNewCardPresent()) {
     return;
   }
-  // Read card serial
   if (!rfid.PICC_ReadCardSerial()) {
     return;
   }
@@ -377,11 +478,13 @@ void checkRfidReader() {
     Serial.println("[RFID] Generic Neighbor / Swarm Token Detected");
   }
   Serial.println("[LED] Lighting Green LED (RGB)");
+  Serial.println("[BUZZER] Triggering RFID confirmation beep");
   Serial.println("========================================");
 
-  // Activate Green LED state
+  // Activate Green LED state & sound confirmation chirp
   rfidActive = true;
   rfidDetectedTime = millis();
+  buzzRfidSuccess();
 
   // Stop encryption & halt card
   rfid.PICC_HaltA();
@@ -389,7 +492,7 @@ void checkRfidReader() {
 }
 
 // ======================================================================================
-// 9. ESP-NOW WIRELESS COMMUNICATION
+// 10. ESP-NOW WIRELESS COMMUNICATION
 // ======================================================================================
 
 // Callback executed upon receiving an ESP-NOW frame
@@ -433,14 +536,22 @@ void broadcastPacket() {
 // Periodic serial console diagnostics
 void printDiagnosticStatus() {
   int count = getActiveNeighborCount();
+  int dockedCount = getDockedFaceCount();
   bool closeToAll = isCloseToAllNeighbors();
 
   Serial.println("\n-------------------------------------------------------------");
-  Serial.printf("BRICK #%d | Neighbors: %d | Close To All: %s | On-Board LED: %s\n",
+  Serial.printf("BRICK #%d | Active Neighbors: %d | Close To All: %s | On-Board LED: %s\n",
                 BRICK_ID,
                 count,
                 closeToAll ? "YES" : "NO",
                 closeToAll ? "ON" : "OFF");
+
+  Serial.printf("IR Faces Docked (%d/4): [N:%s E:%s S:%s W:%s]\n",
+                dockedCount,
+                irFaceDetected[FACE_NORTH] ? "YES" : "--",
+                irFaceDetected[FACE_EAST]  ? "YES" : "--",
+                irFaceDetected[FACE_SOUTH] ? "YES" : "--",
+                irFaceDetected[FACE_WEST]  ? "YES" : "--");
 
   if (rfidActive) {
     Serial.printf("RGB LED State: [GREEN] (RFID Active: %s)\n", lastReadUid.c_str());
@@ -466,7 +577,7 @@ void printDiagnosticStatus() {
 }
 
 // ======================================================================================
-// 10. ARDUINO SETUP & MAIN LOOP
+// 11. ARDUINO SETUP & MAIN LOOP
 // ======================================================================================
 void setup() {
   Serial.begin(115200);
@@ -476,6 +587,7 @@ void setup() {
   Serial.println("=============================================================");
   Serial.println("     MULTI-AGENT SMART BRICKS (MICROBOTS) FIRMWARE           ");
   Serial.printf ("     Node Identity: BRICK #%d of %d                          \n", BRICK_ID, TOTAL_SWARM_BRICKS);
+  Serial.println("     Pin Map: All GPIOs <= 35 (Compatible with 30-Pin ESP32) \n");
   Serial.println("=============================================================");
 
   // Initialize LED Pins
@@ -486,6 +598,22 @@ void setup() {
 
   setOnboardLed(false);
   setRgbColor(true, false, false); // Start Red (Standalone indicator)
+
+  // Initialize Buzzer Pin (GPIO 27)
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
+
+  // Initialize 4 Directional IR Sensor Pins (GPIO 34, 35, 32, 33)
+  for (int i = 0; i < 4; i++) {
+    pinMode(IR_PINS[i], INPUT);
+    irFaceDetected[i] = false;
+    prevIrFaceDetected[i] = false;
+    irDebounceCounters[i] = 0;
+  }
+  Serial.println("[IR] 4-Face Directional IR Sensors initialized (North:34, East:35, South:32, West:33)");
+
+  // Initial Boot Acoustic Chime
+  buzzBootChime();
 
   // Initialize Future Hardware Stubs
   initFutureHardware();
@@ -548,22 +676,25 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
-  // 1. Check RFID Reader for local neighbor tag
+  // 1. Check 4 Directional IR Sensors for Face Docking
+  checkIrSensors();
+
+  // 2. Check RFID Reader for local neighbor tag
   checkRfidReader();
 
-  // 2. Broadcast local state packet periodically
+  // 3. Broadcast local state packet periodically
   if (now - lastBroadcastTime > BROADCAST_INTERVAL_MS) {
     lastBroadcastTime = now;
     broadcastPacket();
   }
 
-  // 3. Prune stale peers that have timed out
+  // 4. Prune stale peers that have timed out
   pruneStalePeers();
 
-  // 4. Update On-Board and RGB LED animations
+  // 5. Update On-Board and RGB LED animations
   updateLedStates();
 
-  // 5. Diagnostics serial logger
+  // 6. Diagnostics serial logger
   if (now - lastDebugPrintTime > 2000) {
     lastDebugPrintTime = now;
     printDiagnosticStatus();
