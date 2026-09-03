@@ -85,7 +85,7 @@
 
 // 4 Directional IR Proximity / Obstacle Sensors (North, East, South, West)
 #define PIN_IR_NORTH          34       // North / Top face sensor (D34)
-#define PIN_IR_EAST           35       // East / Right face sensor (D35)
+#define PIN_IR_EAST           14       // East / Right face sensor (D35)
 #define PIN_IR_SOUTH          32       // South / Bottom face sensor (D32)
 #define PIN_IR_WEST           33       // West / Left face sensor (D33)
 
