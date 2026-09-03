@@ -1,55 +1,84 @@
-# Code Repository Guidelines
+# Multi-Agent Microbots (Smart Bricks) — Embedded Firmware
 
-This folder must contain the complete implementation of the project. All code must be organized in a clear, modular, and maintainable structure.
+This repository contains the complete embedded firmware and test suite for decentralized, multi-agent **Smart Bricks (Microbots)** running on **ESP32 Dev Modules**.
 
-## 1. Code Structure
+---
 
-- Keep the project structure clean and logical.
-- Use meaningful file and folder names.
-- Separate code into modules, components, or services where appropriate.
-- Avoid placing unrelated functionality in a single file.
+## 🚀 Project Overview
 
-## 2. Documentation Requirements
+Each microbot ("brick") operates as an autonomous node with no master controller or central server. Nodes detect one another over low-latency wireless communication, estimate neighbor proximity via signal strength, read local RFID tokens, and dynamically signal swarm states through on-board and external RGB LEDs.
 
-Every major component or module should be documented clearly. Include:
+### Key Capabilities
+1. **Peer-to-Peer Swarm Broadcast**: Each ESP32 exchanges its unique ID and neighbor count with all other bricks in the swarm using connectionless ESP-NOW broadcasts.
+2. **Signal-Strength Proximity Sensing**: Real-time RSSI measurement smoothed by an Exponential Moving Average (EMA) filter with hysteresis to reliably determine physical proximity.
+3. **On-Board Proximity LED**: The built-in blue LED (`GPIO 2`) illuminates whenever a brick is in close physical proximity to all its active neighbors.
+4. **Neighbor Count Sequencing**: When not close to all neighbors, the external RGB LED executes an animated pulse sequence: blinking **Blue** $N$ times (where $N$ = neighbor count) followed by a **Red** pulse (or solid **Red** when 0 neighbors are detected).
+5. **RFID Neighbor Detection**: When an RFID tag from a neighbor is scanned by the MFRC522 reader, the RGB LED immediately illuminates **Green** for 2 seconds.
+6. **Future Expansion Ready**: Code architecture includes pinouts, configuration flags, and function stubs for 4-face Directional IR sensors, 9-DoF IMU/Magnetometer orientation, and a haptic vibrator motor actuator.
 
-- purpose of the code,
-- key functionality,
-- assumptions made during implementation,
-- dependencies and libraries used,
-- input/output behavior where relevant.
+---
 
-## 3. Reproducibility
+## 📂 Repository Structure
 
-The project must be easy to replicate and run. A detailed guide for setup and execution should be provided in a file named `setup.md` or equivalent documentation.
+```
+Code/
+├── brick.ino               <-- Primary consolidated production sketch
+├── brick/
+│   └── brick.ino           <-- Arduino IDE compatible sketch folder
+├── INSTRUCTIONS.MD         <-- Complete wiring diagrams, circuit pinouts & user guide
+├── setup.md                <-- Quickstart and flashing guide
+├── README.md               <-- Project overview & documentation guidelines
+├── tests/
+│   ├── sim_topology.py     <-- Visual interactive swarm topology simulator
+│   └── test_topology.py    <-- Automated assertion verification tests
+└── Archive/                <-- Historical prototypes & early experiments
+    ├── README.md           <-- History and design evolution documentation
+    ├── Prototypes/
+    │   ├── espNow_connection/
+    │   ├── brick_0.1/
+    │   ├── Proximity_Mesh/
+    │   └── PROTOTYPE_INST.md
+    └── smart_brick_topology/
+```
 
-This guide should include:
+---
 
-- installation steps,
-- dependency requirements,
-- environment setup,
-- commands to run the project,
-- expected output or behavior,
-- troubleshooting guidance where necessary.
+## 🛠️ Hardware Requirements & Pinout Summary
 
-## 4. Code Quality Standards
+| Peripheral | Function / Pin | ESP32 GPIO |
+| :--- | :--- | :--- |
+| **MFRC522 RFID** | SCK, MISO, MOSI | `GPIO 18`, `GPIO 19`, `GPIO 23` |
+| | SDA / SS, RST | `GPIO 5`, `GPIO 4` |
+| | VCC, GND | `3V3`, `GND` |
+| **Common-Cathode RGB LED** | RED, GREEN, BLUE | `GPIO 16`, `GPIO 17`, `GPIO 25` (via 220Ω resistors) |
+| | Cathode | `GND` |
+| **On-Board LED** | Proximity State | `GPIO 2` |
 
-- Write readable and professional code.
-- Follow consistent naming conventions.
-- Maintain clean formatting and indentation.
-- Remove unused files or dead code.
-- Keep comments meaningful and limited to necessary explanations.
+See [`INSTRUCTIONS.MD`](INSTRUCTIONS.MD) for full circuit diagrams and the future expansion pin map (`GPIO 34, 35, 36, 39` for IR; `GPIO 21, 22` for I2C IMU; `GPIO 32` for Vibrator).
 
-## 5. AI Usage Disclosure
+---
 
-If AI tools are used in any part of the project, their use must be disclosed clearly. Include:
+## 🚦 Status Indicators & Color Legend
 
-- the purpose of AI assistance,
-- the prompt(s) used,
-- a link to the relevant AI conversation or output, if available.
+| State | On-Board LED (`GPIO 2`) | External RGB LED (`GPIO 16, 17, 25`) |
+| :--- | :---: | :--- |
+| **RFID Tag Read** | Normal | 🟢 **Solid GREEN** (2.0s hold) |
+| **Close to All Neighbors** | 💡 **ON** | 🔵 **Solid BLUE** |
+| **0 Neighbors (Standalone)** | ⚫ OFF | 🔴 **Solid RED** |
+| **1 Neighbor (Not Close)** | ⚫ OFF | 🔵 **1 Blue Pulse** ➔ 🔴 **1 Red Pulse** |
+| **2 Neighbors (Not Close)** | ⚫ OFF | 🔵 **2 Blue Pulses** ➔ 🔴 **1 Red Pulse** |
+| **3 Neighbors (Not Close)** | ⚫ OFF | 🔵 **3 Blue Pulses** ➔ 🔴 **1 Red Pulse** |
 
-This ensures transparency and accountability.
+---
 
-## 6. Final Check
+## 🧪 Simulation & Automated Tests
 
-Before submission, confirm that the code is complete, organized, documented, and runnable with the provided instructions.
+To test multi-agent neighbor discovery, docking, and timeout logic locally on your computer:
+
+```bash
+# Run automated topology assertions (Grid, Strip, Timeout)
+python3 tests/test_topology.py
+
+# Run interactive ASCII visual cluster simulator
+python3 tests/sim_topology.py
+```
