@@ -6,18 +6,22 @@ File: Code/tests/test_brick_logic.py
 Validates all system requirements:
 1. Minimal Packet Protocol: Only sender_id and neighbor_count exchanged over ESP-NOW.
 2. Proximity detection:
-   - If close to all active neighbors: On-Board LED turns ON & docking chime sounds.
+   - If close to all active neighbors: On-Board LED turns ON, docking chime sounds & haptic double-pulse.
    - Else: RGB LED sequences Blue then Red in order of neighbor count.
 3. RFID reader detection:
-   - When RFID tag is read: RGB LED turns Green (holds 2s) & sounds confirmation beep.
+   - When RFID tag is read: RGB LED turns Green (holds 2s), sounds confirmation beep & triggers tactile haptic pulse.
 4. 4-Face Directional IR Sensors:
    - Detects physical mating on North, East, South, West faces.
-   - Triggers dock chime and undock alert.
+   - Triggers dock chime, haptic docking pulse, and undock alert.
 5. Timeout and peer eviction:
    - Inactive peers are pruned after timeout.
+6. 9-DoF IMU (MPU9250) Orientation Calculation:
+   - Verifies Pitch, Roll, and Compass Heading (Yaw) geometry calculations.
+7. ERM Vibration Motor Haptic Actuator:
+   - Verifies tactile feedback on RFID scan, physical docking, and swarm consensus.
 """
 
-import time
+import math
 import sys
 
 # Parameters matching brick.ino
@@ -47,12 +51,32 @@ class SimulatedBrick:
         self.ir_faces = [False, False, False, False]
         self.prev_ir_faces = [False, False, False, False]
 
-        # Buzzer Event Log
+        # Buzzer & Haptic Event Logs
         self.buzzer_events = []
+        self.haptic_events = []
         self.prev_close_to_all = False
+
+        # IMU Orientation state
+        self.pitch = 0.0
+        self.roll = 0.0
+        self.heading = 0.0
 
     def trigger_buzzer(self, event_name):
         self.buzzer_events.append(event_name)
+
+    def trigger_haptic(self, event_name):
+        self.haptic_events.append(event_name)
+
+    def update_imu(self, ax, ay, az, mx=0.0, my=0.0, mz=0.0):
+        # Accelerometer tilt angles
+        self.pitch = math.atan2(ay, math.sqrt(ax * ax + az * az)) * 180.0 / math.pi
+        self.roll = math.atan2(-ax, az) * 180.0 / math.pi
+
+        # Magnetometer heading
+        h = math.atan2(my, mx) * 180.0 / math.pi
+        if h < 0.0:
+            h += 360.0
+        self.heading = h
 
     def receive_packet(self, sender_id, reported_count, rssi_raw, current_time):
         if sender_id == self.id:
@@ -85,6 +109,7 @@ class SimulatedBrick:
         close = self.is_close_to_all
         if close and not self.prev_close_to_all:
             self.trigger_buzzer("BUZZ_DOCK_CONSENSUS")
+            self.trigger_haptic("HAPTIC_CONSENSUS_DOUBLE_PULSE")
         self.prev_close_to_all = close
 
     def scan_rfid(self, uid_str, current_time):
@@ -92,12 +117,14 @@ class SimulatedBrick:
         self.rfid_time = current_time
         self.last_tag_uid = uid_str
         self.trigger_buzzer("BUZZ_RFID_SUCCESS")
+        self.trigger_haptic("HAPTIC_RFID_PULSE")
 
     def set_ir_face(self, face_idx, detected):
         prev = self.ir_faces[face_idx]
         self.ir_faces[face_idx] = detected
         if detected and not prev:
             self.trigger_buzzer(f"BUZZ_IR_DOCK_{FACE_NAMES[face_idx]}")
+            self.trigger_haptic(f"HAPTIC_IR_DOCK_{FACE_NAMES[face_idx]}")
         elif not detected and prev:
             self.trigger_buzzer(f"BUZZ_IR_UNDOCK_{FACE_NAMES[face_idx]}")
 
@@ -153,17 +180,18 @@ def test_packet_structure():
     print(">> [PASS] Only sender_id and neighbor_count are transmitted over ESP-NOW.")
 
 
-def test_rfid_green_light_and_buzzer():
-    print("\n--- TEST 2: RFID Reading Lights Green LED & Sounds Buzzer ---")
+def test_rfid_green_light_buzzer_and_haptic():
+    print("\n--- TEST 2: RFID Reading Lights Green LED, Sounds Buzzer & Triggers Haptics ---")
     b1 = SimulatedBrick(1)
     now = 100.0
     assert b1.rgb_led_state == "SOLID RED"
 
     b1.scan_rfid("1A2B3C4D", now)
     print(f"Time t={now}s: RFID Scanned UID '1A2B3C4D'")
-    print(f"RGB LED: {b1.rgb_led_state} | Buzzer Event: {b1.buzzer_events[-1]}")
+    print(f"RGB LED: {b1.rgb_led_state} | Buzzer: {b1.buzzer_events[-1]} | Haptic: {b1.haptic_events[-1]}")
     assert b1.rgb_led_state == "GREEN"
     assert "BUZZ_RFID_SUCCESS" in b1.buzzer_events
+    assert "HAPTIC_RFID_PULSE" in b1.haptic_events
 
     # Within hold window
     b1.prune_stale_peers(now + 1.0)
@@ -173,11 +201,11 @@ def test_rfid_green_light_and_buzzer():
     b1.prune_stale_peers(now + 2.5)
     print(f"Time t={now + 2.5}s: RFID Hold Expired -> RGB LED: {b1.rgb_led_state}")
     assert b1.rgb_led_state == "SOLID RED"
-    print(">> [PASS] RFID reader triggers Green LED and audio confirmation beep.")
+    print(">> [PASS] RFID reader triggers Green LED, audio confirmation beep & tactile haptic pulse.")
 
 
 def test_proximity_and_onboard_led():
-    print("\n--- TEST 3: Proximity to All Neighbors, On-Board LED & Chime ---")
+    print("\n--- TEST 3: Proximity to All Neighbors, On-Board LED, Chime & Haptic Consensus ---")
     b1 = SimulatedBrick(1)
     now = 100.0
 
@@ -211,7 +239,8 @@ def test_proximity_and_onboard_led():
     assert b1.onboard_led
     assert b1.rgb_led_state == "SOLID BLUE"
     assert "BUZZ_DOCK_CONSENSUS" in b1.buzzer_events
-    print(">> [PASS] On-Board LED illuminates & chime sounds when close to all active neighbors.")
+    assert "HAPTIC_CONSENSUS_DOUBLE_PULSE" in b1.haptic_events
+    print(">> [PASS] On-Board LED illuminates, chime sounds & ERM haptic pulse triggers when close to all active neighbors.")
 
 
 def test_neighbor_count_ordering():
@@ -242,28 +271,30 @@ def test_neighbor_count_ordering():
 
 
 def test_4_face_ir_sensors_and_buzzer():
-    print("\n--- TEST 5: 4-Face Directional IR Sensor & Buzzer Feedback ---")
+    print("\n--- TEST 5: 4-Face Directional IR Sensor, Buzzer & Haptic Docking Feedback ---")
     b1 = SimulatedBrick(1)
     assert b1.docked_ir_face_count == 0
 
     # Dock on NORTH face
     b1.set_ir_face(FACE_NORTH, True)
-    print(f"Docked on NORTH: Active IR Faces = {b1.docked_ir_face_count}/4 | Last Buzzer Event: {b1.buzzer_events[-1]}")
+    print(f"Docked on NORTH: Active IR Faces = {b1.docked_ir_face_count}/4 | Last Buzzer: {b1.buzzer_events[-1]} | Last Haptic: {b1.haptic_events[-1]}")
     assert b1.docked_ir_face_count == 1
     assert "BUZZ_IR_DOCK_NORTH" in b1.buzzer_events
+    assert "HAPTIC_IR_DOCK_NORTH" in b1.haptic_events
 
     # Dock on EAST face
     b1.set_ir_face(FACE_EAST, True)
-    print(f"Docked on EAST: Active IR Faces = {b1.docked_ir_face_count}/4 | Last Buzzer Event: {b1.buzzer_events[-1]}")
+    print(f"Docked on EAST: Active IR Faces = {b1.docked_ir_face_count}/4 | Last Buzzer: {b1.buzzer_events[-1]} | Last Haptic: {b1.haptic_events[-1]}")
     assert b1.docked_ir_face_count == 2
     assert "BUZZ_IR_DOCK_EAST" in b1.buzzer_events
+    assert "HAPTIC_IR_DOCK_EAST" in b1.haptic_events
 
     # Undock from NORTH face
     b1.set_ir_face(FACE_NORTH, False)
-    print(f"Undocked NORTH: Active IR Faces = {b1.docked_ir_face_count}/4 | Last Buzzer Event: {b1.buzzer_events[-1]}")
+    print(f"Undocked NORTH: Active IR Faces = {b1.docked_ir_face_count}/4 | Last Buzzer: {b1.buzzer_events[-1]}")
     assert b1.docked_ir_face_count == 1
     assert "BUZZ_IR_UNDOCK_NORTH" in b1.buzzer_events
-    print(">> [PASS] 4-Face IR sensors and docking buzzer alerts functioning perfectly.")
+    print(">> [PASS] 4-Face IR sensors, docking buzzer alerts, and ERM haptic pulses functioning perfectly.")
 
 
 def test_timeout_and_eviction():
@@ -284,16 +315,40 @@ def test_timeout_and_eviction():
     print(">> [PASS] Timed out neighbors evicted cleanly; system reverts to standalone.")
 
 
+def test_mpu9250_imu_and_compass():
+    print("\n--- TEST 7: 9-DoF IMU (MPU9250) Orientation & Magnetometer Heading ---")
+    b1 = SimulatedBrick(1)
+
+    # Flat position: Ax=0, Ay=0, Az=1.0g
+    b1.update_imu(ax=0.0, ay=0.0, az=1.0, mx=10.0, my=0.0, mz=0.0)
+    print(f"Flat, pointing North: Pitch={b1.pitch:.1f} deg | Roll={b1.roll:.1f} deg | Heading={b1.heading:.1f} deg")
+    assert abs(b1.pitch) < 1.0
+    assert abs(b1.roll) < 1.0
+    assert abs(b1.heading) < 1.0
+
+    # Pointing East: Mx=0, My=10.0 uT -> Heading = 90 deg
+    b1.update_imu(ax=0.0, ay=0.0, az=1.0, mx=0.0, my=10.0, mz=0.0)
+    print(f"Pointing East: Heading={b1.heading:.1f} deg")
+    assert abs(b1.heading - 90.0) < 1.0
+
+    # Tilted 45 deg Pitch
+    b1.update_imu(ax=0.0, ay=0.7071, az=0.7071, mx=10.0, my=0.0, mz=0.0)
+    print(f"Tilted Pitch: Pitch={b1.pitch:.1f} deg | Roll={b1.roll:.1f} deg")
+    assert abs(b1.pitch - 45.0) < 1.0
+    print(">> [PASS] MPU9250 9-DoF pitch, roll and magnetic heading computed accurately.")
+
+
 if __name__ == "__main__":
     print("==================================================================")
     print("  RUNNING UNIFIED MICROBOT (SMART BRICK) VERIFICATION TEST SUITE  ")
     print("==================================================================")
     test_packet_structure()
-    test_rfid_green_light_and_buzzer()
+    test_rfid_green_light_buzzer_and_haptic()
     test_proximity_and_onboard_led()
     test_neighbor_count_ordering()
     test_4_face_ir_sensors_and_buzzer()
     test_timeout_and_eviction()
+    test_mpu9250_imu_and_compass()
     print("\n==================================================================")
-    print("  ALL UNIFIED FIRMWARE SPECIFICATIONS PASSED (6/6)               ")
+    print("  ALL UNIFIED FIRMWARE SPECIFICATIONS PASSED (7/7)               ")
     print("==================================================================\n")

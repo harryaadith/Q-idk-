@@ -31,6 +31,14 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 | | VCC & GND | `3V3` & `GND` | `3V3` & `GND` | Shared 3.3V power bus |
 | **Audio Buzzer** | Positive / SIG | `GPIO 27` | **`D27`** | Audible feedback (Chirp / Chimes) |
 | | Negative / GND | `GND` | `GND` | Common ground |
+| **MPU9250 IMU** | SDA | `GPIO 21` | **`D21`** | I2C Data bus |
+| | SCL | `GPIO 22` | **`D22`** | I2C Clock bus |
+| | NCS | `3V3` | `3V3` | **Must be 3.3V** to enable I2C mode |
+| | AD0 & FSYNC | `GND` | `GND` | Address select (0x68) & frame sync |
+| | VCC & GND | `3V3` & `GND` | `3V3` & `GND` | Power supply |
+| **ERM Motor** | Gate / Base | `GPIO 26` | **`D26`** | Driven via 1kΩ into NPN transistor base |
+| | Motor (+) | `3V3` | `3V3` | Positive motor rail with flyback diode |
+| | Motor (-) | Collector | Transistor | Switched to GND through transistor |
 
 ---
 
@@ -45,29 +53,29 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
    - Third Brick: `#define BRICK_ID 3`
    - Fourth Brick: `#define BRICK_ID 4`
 5. Upload to each respective ESP32 brick.
-6. Open the Serial Monitor at **115200 baud** to view real-time neighbor detection and IR face docking packets.
+6. Open the Serial Monitor at **115200 baud** to view real-time neighbor detection, IMU orientation, and face docking logs.
 
 ---
 
 ## 3. Visual Status & Sensory Feedback Legend
 
-| Event / Condition | On-Board LED (`GPIO 2`) | RGB LED (`GPIO 16, 17, 25`) | Buzzer (`GPIO 27`) |
-| :--- | :---: | :--- | :--- |
-| **Boot Complete** | Pulse | Flash Red | 🎵 Startup melodic chime |
-| **RFID Tag Read** | Normal | 🟢 **Solid GREEN** (2.0s hold) | 🔔 Cheerful double-chirp |
-| **IR Face Docks** | Normal | Normal | 🔔 Ascending double-beep |
-| **IR Face Undocks** | Normal | Normal | ⚠️ Single alert tone |
-| **Close to All Neighbors** | 💡 **Solid ON** | 🔵 **Solid BLUE** | 🔔 Consensus chime on entry |
-| **0 Neighbors (Standalone)** | ⚫ OFF | 🔴 **Solid RED** | Silent |
-| **1 Neighbor (Not Close)** | ⚫ OFF | 🔵 **1 Blue Pulse** ➔ 🔴 **1 Red Pulse** | Silent |
-| **2 Neighbors (Not Close)** | ⚫ OFF | 🔵 **2 Blue Pulses** ➔ 🔴 **1 Red Pulse** | Silent |
-| **3 Neighbors (Not Close)** | ⚫ OFF | 🔵 **3 Blue Pulses** ➔ 🔴 **1 Red Pulse** | Silent |
+| Event / Condition | On-Board LED (`GPIO 2`) | RGB LED (`GPIO 16, 17, 25`) | Buzzer (`GPIO 27`) | ERM Motor (`GPIO 26`) |
+| :--- | :---: | :--- | :--- | :--- |
+| **Boot Complete** | Pulse | Flash Red | 🎵 Melodic startup chime | ⚡ 50ms startup buzz |
+| **RFID Tag Read** | Normal | 🟢 **Solid GREEN** (2.0s hold) | 🔔 Cheerful double-chirp | ⚡ 100ms tactile click |
+| **IR Face Docks** | Normal | Normal | 🔔 Ascending double-beep | ⚡ 80ms docking snap |
+| **IR Face Undocks** | Normal | Normal | ⚠️ Single alert tone | Silent |
+| **Close to All Neighbors** | 💡 **Solid ON** | 🔵 **Solid BLUE** | 🔔 Consensus chime on entry | ⚡ Double-pulse buzz |
+| **0 Neighbors (Standalone)** | ⚫ OFF | 🔴 **Solid RED** | Silent | Silent |
+| **1 Neighbor (Not Close)** | ⚫ OFF | 🔵 **1 Blue Pulse** ➔ 🔴 **1 Red Pulse** | Silent | Silent |
+| **2 Neighbors (Not Close)** | ⚫ OFF | 🔵 **2 Blue Pulses** ➔ 🔴 **1 Red Pulse** | Silent | Silent |
+| **3 Neighbors (Not Close)** | ⚫ OFF | 🔵 **3 Blue Pulses** ➔ 🔴 **1 Red Pulse** | Silent | Silent |
 
 ---
 
 ## 4. Repository Layout
 
-- [`brick.ino`](brick.ino) & [`brick/brick.ino`](brick/brick.ino): Unified production firmware.
-- [`INSTRUCTIONS.MD`](INSTRUCTIONS.MD): Detailed system architecture, schematics, and future hardware roadmap.
-- [`Archive/`](Archive/): Earlier prototype sketches and experimental implementations.
-- [`tests/`](tests/): Multi-agent simulation and automated test scripts (`test_brick_logic.py`).
+- [`brick.ino`](brick.ino) & [`brick/brick.ino`](brick/brick.ino): Unified production firmware with MPU9250 and ERM motor support.
+- [`INSTRUCTIONS.MD`](INSTRUCTIONS.MD): Complete system architecture, wiring guides, transistor schematics, and pinout matrix.
+- [`setup.md`](setup.md): Quickstart and flashing guide.
+- [`tests/`](tests/): Multi-agent simulation and automated test scripts (`test_brick_logic.py`, 7/7 passing).

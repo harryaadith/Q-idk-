@@ -22,9 +22,14 @@
  *      - Physical face docking & undocking chime
  *      - Proximity consensus alert
  *      - System boot chime
- *  8. Future integration stubs:
- *      - 9-DoF IMU + Magnetometer (I2C: GPIO 21, 22) for self-orientation
- *      - Haptic Vibrator Motor Actuator (GPIO 26)
+ *  8. 9-DoF IMU + Magnetometer (MPU9250 / AK8963 on I2C: SDA=GPIO 21, SCL=GPIO 22):
+ *      - Real-time 3-axis accelerometer and gyroscope tracking
+ *      - AK8963 3-axis magnetometer for Magnetic North compass heading
+ *      - Calculates Pitch, Roll, and Yaw (Compass Heading) for self-orientation
+ *  9. ERM Vibration Motor Actuator (GPIO 26):
+ *      - Tactile haptic feedback on RFID token scans
+ *      - Tactile click on physical IR face docking
+ *      - Double haptic pulse on swarm proximity consensus
  * ======================================================================================
  */
 
@@ -33,6 +38,7 @@
 #include <esp_wifi.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include <Wire.h>
 
 // ======================================================================================
 // 1. CONFIGURATION PARAMETERS (Configure BRICK_ID per node before flashing)
@@ -59,6 +65,9 @@
 // Audio Buzzer Settings
 #define BUZZER_ENABLED        true     // Master toggle for acoustic buzzer feedback
 
+// IMU Polling Interval
+#define IMU_POLL_INTERVAL_MS  100      // Poll IMU every 100ms (10Hz)
+
 // LED Animation Timings (in milliseconds)
 #define BLINK_BLUE_ON_MS      220      // Blue pulse duration
 #define BLINK_BLUE_OFF_MS     180      // Gap between Blue pulses
@@ -84,23 +93,23 @@
 #define PIN_RFID_RST          4
 
 // 4 Directional IR Proximity / Obstacle Sensors (North, East, South, West)
-#define PIN_IR_NORTH          34       // North / Top face sensor (D34)
-#define PIN_IR_EAST           35       // East / Right face sensor (D35)
+#define PIN_IR_NORTH          34       // North / Top face sensor (D34 - Input-only)
+#define PIN_IR_EAST           35       // East / Right face sensor (D35 - Input-only)
 #define PIN_IR_SOUTH          32       // South / Bottom face sensor (D32)
 #define PIN_IR_WEST           33       // West / Left face sensor (D33)
 
 // Audio Buzzer (Active or driven passive buzzer)
 #define PIN_BUZZER            27       // Driven via GPIO 27 (D27)
 
-// --------------------------------------------------------------------------------------
-// FUTURE EXPANSION PINS (Reserved for upcoming roadmap modules)
-// --------------------------------------------------------------------------------------
-// IMU + Magnetometer (I2C Bus: MPU6050/9250 or BNO055)
-#define PIN_I2C_SDA           21
-#define PIN_I2C_SCL           22
+// 9-DoF IMU + Magnetometer (I2C Bus: MPU9250 / AK8963)
+#define PIN_I2C_SDA           21       // I2C Serial Data (D21)
+#define PIN_I2C_SCL           22       // I2C Serial Clock (D22)
+#define MPU9250_I2C_ADDR      0x68     // Primary I2C address (AD0 to GND)
+#define AK8963_I2C_ADDR       0x0C     // Magnetometer I2C address (via I2C bypass)
 
-// Haptic Vibrator Motor Actuator (Transistor / MOSFET gate)
-#define PIN_VIBRATOR_MOTOR    26
+// ERM Vibration Motor Actuator (2 wires: driven via NPN transistor / MOSFET driver)
+#define PIN_ERM_MOTOR         26       // Driven via GPIO 26 (D26)
+#define PIN_VIBRATOR_MOTOR    PIN_ERM_MOTOR // Backward compatibility alias
 
 // ======================================================================================
 // 3. PACKET DEFINITION & DATA STRUCTURES
@@ -140,6 +149,20 @@ bool prevIrFaceDetected[4]  = {false, false, false, false};
 uint8_t irDebounceCounters[4] = {0, 0, 0, 0};
 uint32_t lastIrPollTime     = 0;
 
+// MPU9250 & AK8963 Motion Tracking Data
+struct ImuData {
+  bool     mpu_detected;             // True if MPU-6500 responded
+  bool     mag_detected;             // True if AK8963 responded
+  float    accel_x, accel_y, accel_z;// In g
+  float    gyro_x, gyro_y, gyro_z;   // In deg/s
+  float    mag_x, mag_y, mag_z;      // In uT
+  float    pitch;                    // Tilt angle in degrees (-90 to +90)
+  float    roll;                     // Roll angle in degrees (-180 to +180)
+  float    heading;                  // Magnetic North heading in degrees (0 to 360)
+};
+ImuData imu = {};
+uint32_t lastImuPollTime = 0;
+
 // Hardware Instances
 MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
 uint8_t broadcastAddress[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -166,7 +189,7 @@ const KnownTag KNOWN_TAGS[] = {
 const size_t KNOWN_TAGS_COUNT = sizeof(KNOWN_TAGS) / sizeof(KNOWN_TAGS[0]);
 
 // ======================================================================================
-// 4. LOW-LEVEL HARDWARE DRIVERS (Buzzer, LEDs, IR)
+// 4. LOW-LEVEL HARDWARE DRIVERS (Buzzer, ERM Motor, LEDs, IR)
 // ======================================================================================
 
 // Set External Common-Cathode RGB LED Color
@@ -179,6 +202,33 @@ void setRgbColor(bool r, bool g, bool b) {
 // Set On-Board Status LED
 void setOnboardLed(bool state) {
   digitalWrite(PIN_ONBOARD_LED, state ? HIGH : LOW);
+}
+
+// ERM Vibration Motor Driver
+void initErmMotor() {
+  pinMode(PIN_ERM_MOTOR, OUTPUT);
+  digitalWrite(PIN_ERM_MOTOR, LOW);
+}
+
+void triggerErmHaptic(uint16_t duration_ms) {
+  digitalWrite(PIN_ERM_MOTOR, HIGH);
+  delay(duration_ms);
+  digitalWrite(PIN_ERM_MOTOR, LOW);
+}
+
+void triggerErmDoublePulse() {
+  digitalWrite(PIN_ERM_MOTOR, HIGH);
+  delay(50);
+  digitalWrite(PIN_ERM_MOTOR, LOW);
+  delay(40);
+  digitalWrite(PIN_ERM_MOTOR, HIGH);
+  delay(70);
+  digitalWrite(PIN_ERM_MOTOR, LOW);
+}
+
+// Backward compatibility wrapper
+void triggerHapticFeedback(uint16_t duration_ms) {
+  triggerErmHaptic(duration_ms);
 }
 
 // Base Buzzer Pulse
@@ -227,7 +277,131 @@ void buzzBootChime() {
 }
 
 // ======================================================================================
-// 5. DIRECTIONAL IR SENSOR SCANNING & FACE DOCKING
+// 5. 9-DoF IMU & MAGNETOMETER DRIVERS (MPU9250 & AK8963)
+// ======================================================================================
+void i2cWriteByte(uint8_t devAddr, uint8_t regAddr, uint8_t data) {
+  Wire.beginTransmission(devAddr);
+  Wire.write(regAddr);
+  Wire.write(data);
+  Wire.endTransmission();
+}
+
+uint8_t i2cReadByte(uint8_t devAddr, uint8_t regAddr) {
+  Wire.beginTransmission(devAddr);
+  Wire.write(regAddr);
+  if (Wire.endTransmission(false) != 0) return 0xFF;
+  Wire.requestFrom((uint8_t)devAddr, (uint8_t)1);
+  if (Wire.available()) {
+    return Wire.read();
+  }
+  return 0xFF;
+}
+
+bool initMpu9250() {
+  Wire.beginTransmission(MPU9250_I2C_ADDR);
+  if (Wire.endTransmission() != 0) {
+    Serial.println("[IMU] MPU9250 not detected at 0x68. Verify SDA=GPIO21, SCL=GPIO22, NCS=3V3, AD0=GND.");
+    imu.mpu_detected = false;
+    imu.mag_detected = false;
+    return false;
+  }
+
+  uint8_t whoami = i2cReadByte(MPU9250_I2C_ADDR, 0x75);
+  Serial.printf("[IMU] MPU9250 found! Device WHO_AM_I: 0x%02X\n", whoami);
+
+  // Wake up sensor: clear SLEEP bit in PWR_MGMT_1 (0x6B)
+  i2cWriteByte(MPU9250_I2C_ADDR, 0x6B, 0x00);
+  delay(15);
+
+  // Enable I2C Bypass mode in INT_PIN_CFG (0x37) to access internal AK8963 on main I2C bus
+  i2cWriteByte(MPU9250_I2C_ADDR, 0x37, 0x02);
+  delay(15);
+
+  // Probe AK8963 Magnetometer at 0x0C
+  Wire.beginTransmission(AK8963_I2C_ADDR);
+  if (Wire.endTransmission() == 0) {
+    uint8_t magWhoAmI = i2cReadByte(AK8963_I2C_ADDR, 0x00);
+    Serial.printf("[IMU] AK8963 Magnetometer online! ID: 0x%02X\n", magWhoAmI);
+    // Set 16-bit resolution, 100Hz continuous measurement mode 2
+    i2cWriteByte(AK8963_I2C_ADDR, 0x0A, 0x16);
+    imu.mag_detected = true;
+  } else {
+    Serial.println("[IMU] Note: AK8963 Magnetometer at 0x0C not responding. (6-DoF Accel/Gyro operational)");
+    imu.mag_detected = false;
+  }
+
+  imu.mpu_detected = true;
+  return true;
+}
+
+void readMpu9250() {
+  if (!imu.mpu_detected) return;
+
+  uint32_t now = millis();
+  if (now - lastImuPollTime < IMU_POLL_INTERVAL_MS) return;
+  lastImuPollTime = now;
+
+  // Read 14 bytes from ACCEL_XOUT_H (0x3B)
+  Wire.beginTransmission(MPU9250_I2C_ADDR);
+  Wire.write(0x3B);
+  if (Wire.endTransmission(false) == 0) {
+    Wire.requestFrom((uint8_t)MPU9250_I2C_ADDR, (uint8_t)14);
+    if (Wire.available() >= 14) {
+      int16_t ax = (Wire.read() << 8) | Wire.read();
+      int16_t ay = (Wire.read() << 8) | Wire.read();
+      int16_t az = (Wire.read() << 8) | Wire.read();
+      int16_t tempRaw = (Wire.read() << 8) | Wire.read();
+      int16_t gx = (Wire.read() << 8) | Wire.read();
+      int16_t gy = (Wire.read() << 8) | Wire.read();
+      int16_t gz = (Wire.read() << 8) | Wire.read();
+
+      // Convert to physical units (+/-2g -> 16384 LSB/g; +/-250 deg/s -> 131 LSB/deg/s)
+      imu.accel_x = ax / 16384.0f;
+      imu.accel_y = ay / 16384.0f;
+      imu.accel_z = az / 16384.0f;
+
+      imu.gyro_x = gx / 131.0f;
+      imu.gyro_y = gy / 131.0f;
+      imu.gyro_z = gz / 131.0f;
+
+      // Compute Pitch and Roll in degrees
+      imu.pitch = atan2(imu.accel_y, sqrt(imu.accel_x * imu.accel_x + imu.accel_z * imu.accel_z)) * 180.0f / PI;
+      imu.roll  = atan2(-imu.accel_x, imu.accel_z) * 180.0f / PI;
+    }
+  }
+
+  // Read Magnetometer if available
+  if (imu.mag_detected) {
+    uint8_t st1 = i2cReadByte(AK8963_I2C_ADDR, 0x02); // Data ready check
+    if (st1 & 0x01) {
+      Wire.beginTransmission(AK8963_I2C_ADDR);
+      Wire.write(0x03); // HXL
+      if (Wire.endTransmission(false) == 0) {
+        Wire.requestFrom((uint8_t)AK8963_I2C_ADDR, (uint8_t)7);
+        if (Wire.available() >= 7) {
+          int16_t mx = Wire.read() | (Wire.read() << 8); // Little-endian
+          int16_t my = Wire.read() | (Wire.read() << 8);
+          int16_t mz = Wire.read() | (Wire.read() << 8);
+          uint8_t st2 = Wire.read(); // Must read ST2 to unlock next reading
+
+          if (!(st2 & 0x08)) { // No magnetic sensor overflow
+            imu.mag_x = mx * 0.15f;
+            imu.mag_y = my * 0.15f;
+            imu.mag_z = mz * 0.15f;
+
+            // Planar compass heading in degrees relative to Magnetic North
+            float h = atan2(imu.mag_y, imu.mag_x) * 180.0f / PI;
+            if (h < 0.0f) h += 360.0f;
+            imu.heading = h;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ======================================================================================
+// 6. DIRECTIONAL IR SENSOR SCANNING & FACE DOCKING
 // ======================================================================================
 int getDockedFaceCount() {
   int count = 0;
@@ -247,18 +421,17 @@ void checkIrSensors() {
     bool detected = IR_ACTIVE_LOW ? (raw == LOW) : (raw == HIGH);
 
     if (detected == irFaceDetected[i]) {
-      // Reset debounce counter if state matches current stable state
       irDebounceCounters[i] = 0;
     } else {
       irDebounceCounters[i]++;
       if (irDebounceCounters[i] >= IR_DEBOUNCE_COUNT) {
-        // Confirmed state change!
         irFaceDetected[i] = detected;
         irDebounceCounters[i] = 0;
 
         if (detected) {
           Serial.printf("[IR] >>> FACE DOCKED: %s face detected adjacent brick! <<<\n", FACE_NAMES[i]);
           buzzDockChime();
+          triggerErmHaptic(80); // Tactile docking snap pulse!
         } else {
           Serial.printf("[IR] <<< FACE UNDOCKED: %s face cleared. <<<\n", FACE_NAMES[i]);
           buzzUndockChime();
@@ -266,39 +439,6 @@ void checkIrSensors() {
       }
     }
   }
-}
-
-// ======================================================================================
-// 6. FUTURE EXPANSION TODO STUBS
-// ======================================================================================
-bool enableImuOrientation = false;
-bool enableVibratorMotor = false;
-
-struct SwarmOrientation {
-  float yaw;      // Compass heading relative to Magnetic North
-  float pitch;    // Inclination pitch
-  float roll;     // Inclination roll
-};
-SwarmOrientation currentOrientation = {0.0f, 0.0f, 0.0f};
-
-void initFutureHardware() {
-  /*
-   * FUTURE TODO:
-   * 1. Initialize Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL) and configure IMU/Magnetometer
-   * 2. Initialize Vibrator Motor PWM/digital pin on GPIO 26
-   */
-  pinMode(PIN_VIBRATOR_MOTOR, OUTPUT);
-  digitalWrite(PIN_VIBRATOR_MOTOR, LOW);
-}
-
-void triggerHapticFeedback(uint16_t duration_ms) {
-  digitalWrite(PIN_VIBRATOR_MOTOR, HIGH);
-  delay(duration_ms);
-  digitalWrite(PIN_VIBRATOR_MOTOR, LOW);
-}
-
-void updateImuSelfOrientation() {
-  // FUTURE TODO: Query MPU9250 / QMC5883L for yaw/pitch/roll orientation
 }
 
 // ======================================================================================
@@ -386,9 +526,10 @@ void updateLedStates() {
   bool closeToAll = isCloseToAllNeighbors();
   int neighborCount = getActiveNeighborCount();
 
-  // Edge detection for full proximity consensus chime
+  // Edge detection for full proximity consensus chime and haptic feedback
   if (closeToAll && !prevCloseToAll) {
     buzzDockChime();
+    triggerErmDoublePulse(); // Tactile consensus double pulse!
   }
   prevCloseToAll = closeToAll;
 
@@ -479,12 +620,14 @@ void checkRfidReader() {
   }
   Serial.println("[LED] Lighting Green LED (RGB)");
   Serial.println("[BUZZER] Triggering RFID confirmation beep");
+  Serial.println("[HAPTIC] Triggering ERM tactile pulse");
   Serial.println("========================================");
 
-  // Activate Green LED state & sound confirmation chirp
+  // Activate Green LED state, sound confirmation chirp, and trigger haptic pulse
   rfidActive = true;
   rfidDetectedTime = millis();
   buzzRfidSuccess();
+  triggerErmHaptic(100); // 100ms tactile click!
 
   // Stop encryption & halt card
   rfid.PICC_HaltA();
@@ -553,14 +696,28 @@ void printDiagnosticStatus() {
                 irFaceDetected[FACE_SOUTH] ? "YES" : "--",
                 irFaceDetected[FACE_WEST]  ? "YES" : "--");
 
-  if (rfidActive) {
-    Serial.printf("RGB LED State: [GREEN] (RFID Active: %s)\n", lastReadUid.c_str());
-  } else if (closeToAll) {
-    Serial.println("RGB LED State: [SOLID BLUE] (All Neighbors Close)");
-  } else if (count == 0) {
-    Serial.println("RGB LED State: [SOLID RED] (0 Neighbors)");
+  if (imu.mpu_detected) {
+    if (imu.mag_detected) {
+      Serial.printf("IMU (MPU9250):    Heading: %.1f deg | Pitch: %.1f deg | Roll: %.1f deg [ONLINE]\n",
+                    imu.heading, imu.pitch, imu.roll);
+    } else {
+      Serial.printf("IMU (MPU9250):    Pitch: %.1f deg | Roll: %.1f deg [6-DoF ONLINE]\n",
+                    imu.pitch, imu.roll);
+    }
   } else {
-    Serial.printf("RGB LED State: [BLUEx%d then RED] (Cycling Count Sequence)\n", count);
+    Serial.println("IMU (MPU9250):    [OFFLINE / NOT CONNECTED]");
+  }
+
+  Serial.println("ERM Motor (D26):  [READY]");
+
+  if (rfidActive) {
+    Serial.printf("RGB LED State:    [GREEN] (RFID Active: %s)\n", lastReadUid.c_str());
+  } else if (closeToAll) {
+    Serial.println("RGB LED State:    [SOLID BLUE] (All Neighbors Close)");
+  } else if (count == 0) {
+    Serial.println("RGB LED State:    [SOLID RED] (0 Neighbors)");
+  } else {
+    Serial.printf("RGB LED State:    [BLUEx%d then RED] (Cycling Count Sequence)\n", count);
   }
 
   for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++) {
@@ -603,6 +760,9 @@ void setup() {
   pinMode(PIN_BUZZER, OUTPUT);
   digitalWrite(PIN_BUZZER, LOW);
 
+  // Initialize ERM Vibration Motor (GPIO 26)
+  initErmMotor();
+
   // Initialize 4 Directional IR Sensor Pins (GPIO 34, 35, 32, 33)
   for (int i = 0; i < 4; i++) {
     pinMode(IR_PINS[i], INPUT);
@@ -612,11 +772,13 @@ void setup() {
   }
   Serial.println("[IR] 4-Face Directional IR Sensors initialized (North:34, East:35, South:32, West:33)");
 
-  // Initial Boot Acoustic Chime
+  // Initial Boot Acoustic & Haptic Chime
   buzzBootChime();
+  triggerErmHaptic(50); // 50ms tactile pulse confirming ERM motor is working
 
-  // Initialize Future Hardware Stubs
-  initFutureHardware();
+  // Initialize I2C Bus for MPU9250
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  initMpu9250();
 
   // Initialize MFRC522 RFID Reader
   SPI.begin();
@@ -679,22 +841,25 @@ void loop() {
   // 1. Check 4 Directional IR Sensors for Face Docking
   checkIrSensors();
 
-  // 2. Check RFID Reader for local neighbor tag
+  // 2. Poll 9-DoF IMU & Magnetometer for Self-Orientation
+  readMpu9250();
+
+  // 3. Check RFID Reader for local neighbor tag
   checkRfidReader();
 
-  // 3. Broadcast local state packet periodically
+  // 4. Broadcast local state packet periodically
   if (now - lastBroadcastTime > BROADCAST_INTERVAL_MS) {
     lastBroadcastTime = now;
     broadcastPacket();
   }
 
-  // 4. Prune stale peers that have timed out
+  // 5. Prune stale peers that have timed out
   pruneStalePeers();
 
-  // 5. Update On-Board and RGB LED animations
+  // 6. Update On-Board and RGB LED animations & Haptics
   updateLedStates();
 
-  // 6. Diagnostics serial logger
+  // 7. Diagnostics serial logger
   if (now - lastDebugPrintTime > 2000) {
     lastDebugPrintTime = now;
     printDiagnosticStatus();
