@@ -313,6 +313,10 @@ bool initMpu9250() {
   i2cWriteByte(MPU9250_I2C_ADDR, 0x6B, 0x00);
   delay(15);
 
+  // Disable I2C Master mode in USER_CTRL (0x6A) to allow bypass access to AK8963
+  i2cWriteByte(MPU9250_I2C_ADDR, 0x6A, 0x00);
+  delay(10);
+
   // Enable I2C Bypass mode in INT_PIN_CFG (0x37) to access internal AK8963 on main I2C bus
   i2cWriteByte(MPU9250_I2C_ADDR, 0x37, 0x02);
   delay(15);
@@ -347,13 +351,17 @@ void readMpu9250() {
   if (Wire.endTransmission(false) == 0) {
     Wire.requestFrom((uint8_t)MPU9250_I2C_ADDR, (uint8_t)14);
     if (Wire.available() >= 14) {
-      int16_t ax = (Wire.read() << 8) | Wire.read();
-      int16_t ay = (Wire.read() << 8) | Wire.read();
-      int16_t az = (Wire.read() << 8) | Wire.read();
-      int16_t tempRaw = (Wire.read() << 8) | Wire.read();
-      int16_t gx = (Wire.read() << 8) | Wire.read();
-      int16_t gy = (Wire.read() << 8) | Wire.read();
-      int16_t gz = (Wire.read() << 8) | Wire.read();
+      uint8_t buf[14];
+      for (int i = 0; i < 14; i++) {
+        buf[i] = Wire.read();
+      }
+      int16_t ax = (int16_t)((buf[0] << 8) | buf[1]);
+      int16_t ay = (int16_t)((buf[2] << 8) | buf[3]);
+      int16_t az = (int16_t)((buf[4] << 8) | buf[5]);
+      int16_t tempRaw = (int16_t)((buf[6] << 8) | buf[7]);
+      int16_t gx = (int16_t)((buf[8] << 8) | buf[9]);
+      int16_t gy = (int16_t)((buf[10] << 8) | buf[11]);
+      int16_t gz = (int16_t)((buf[12] << 8) | buf[13]);
 
       // Convert to physical units (+/-2g -> 16384 LSB/g; +/-250 deg/s -> 131 LSB/deg/s)
       imu.accel_x = ax / 16384.0f;
@@ -379,10 +387,14 @@ void readMpu9250() {
       if (Wire.endTransmission(false) == 0) {
         Wire.requestFrom((uint8_t)AK8963_I2C_ADDR, (uint8_t)7);
         if (Wire.available() >= 7) {
-          int16_t mx = Wire.read() | (Wire.read() << 8); // Little-endian
-          int16_t my = Wire.read() | (Wire.read() << 8);
-          int16_t mz = Wire.read() | (Wire.read() << 8);
-          uint8_t st2 = Wire.read(); // Must read ST2 to unlock next reading
+          uint8_t magBuf[7];
+          for (int i = 0; i < 7; i++) {
+            magBuf[i] = Wire.read();
+          }
+          int16_t mx = (int16_t)(magBuf[0] | (magBuf[1] << 8)); // Little-endian
+          int16_t my = (int16_t)(magBuf[2] | (magBuf[3] << 8));
+          int16_t mz = (int16_t)(magBuf[4] | (magBuf[5] << 8));
+          uint8_t st2 = magBuf[6]; // Must read ST2 to unlock next reading
 
           if (!(st2 & 0x08)) { // No magnetic sensor overflow
             imu.mag_x = mx * 0.15f;
@@ -657,7 +669,10 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   }
 
   // Extract packet RSSI from radio control structure
-  int8_t rssi = info->rx_ctrl->rssi;
+  int8_t rssi = -70;
+  if (info && info->rx_ctrl) {
+    rssi = info->rx_ctrl->rssi;
+  }
 
   // Update peer state and proximity
   evaluateProximity(incoming.sender_id, rssi);
