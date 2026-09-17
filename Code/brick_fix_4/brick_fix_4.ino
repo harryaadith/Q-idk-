@@ -45,7 +45,7 @@
 // ======================================================================================
 // 1. CONFIGURATION PARAMETERS (Configure BRICK_ID per node before flashing)
 // ======================================================================================
-#define BRICK_ID              1        // Unique ID for this brick: 1, 2, 3, or 4
+#define BRICK_ID              4        // Unique ID for this brick: 1, 2, 3, or 4
 #define TOTAL_SWARM_BRICKS    4        // Total number of bricks in the multi-agent system
 #define WIFI_CHANNEL          1        // ESP-NOW WiFi Channel (must be identical across bricks)
 
@@ -819,9 +819,11 @@ void setup() {
   }
 
   // Initialize Wi-Fi in Station mode for ESP-NOW
+  delay(150); // Power rail settling delay
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  WiFi.setTxPower(WIFI_POWER_11dBm); // Lower peak RF current
 
   Serial.print("[WIFI] MAC Address: ");
   Serial.println(WiFi.macAddress());

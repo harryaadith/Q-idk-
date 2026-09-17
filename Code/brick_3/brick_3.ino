@@ -45,7 +45,7 @@
 // ======================================================================================
 // 1. CONFIGURATION PARAMETERS (Configure BRICK_ID per node before flashing)
 // ======================================================================================
-#define BRICK_ID              1        // Unique ID for this brick: 1, 2, 3, or 4
+#define BRICK_ID              3        // Unique ID for this brick: 1, 2, 3, or 4
 #define TOTAL_SWARM_BRICKS    4        // Total number of bricks in the multi-agent system
 #define WIFI_CHANNEL          1        // ESP-NOW WiFi Channel (must be identical across bricks)
 
