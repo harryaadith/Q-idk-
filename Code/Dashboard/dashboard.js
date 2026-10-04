@@ -74,7 +74,7 @@ function render(state) {
       typeof b.heading==="number" && Number.isFinite(b.heading) && b.ageMs<=1000;
     card.querySelector(".square").style.transform = `rotate(${valid ? b.heading : 0}deg)`;
     card.querySelector(".heading").textContent = valid ? `${b.heading.toFixed(1)}° from aligned start` : "Unknown / realign";
-    const states=["IMU unavailable","Keep flat and still for gyro bias calibration","Tracking; relative yaw drifts","Tracking lost; align all bricks again"];
+    const states=["IMU unavailable","Keep still for gyro bias calibration","Tracking; relative yaw drifts","Tracking lost; align all bricks again"];
     card.querySelector(".orientation").textContent=b.orientationState===2 && !valid ? "Samples unavailable/stale; check IMU and realign" : (states[b.orientationState] || "Firmware orientation unavailable") + (valid && Number.isFinite(b.alignmentAgeMs) ? ` · reference ${Math.floor(b.alignmentAgeMs/1000)} s old` : "");
     const names=["N","E","S","W"];
     [...card.querySelectorAll(".face")].forEach((el,i)=>el.classList.toggle("occupied",!!(b.faces & (1<<i))));

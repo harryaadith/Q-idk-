@@ -10,7 +10,7 @@ Start with [HOW_TO_RUN.md](HOW_TO_RUN.md) for wiring, software installation, com
 
 Upload the same [brick.ino](Code/brick/brick.ino) to every board. Hardware identities and display numbers are automatic. Join `SmartSurgeryTray` with password `smarttray22`, then open `http://192.168.4.1`.
 
-The dashboard infers a connected 2D square-grid layout from relative gyro yaw and face occupancy. Start flat and still with all N marks aligned; use 90-degree rotations. Ambiguous layouts are shown as alternatives and can be confirmed by the operator. Gyro drift requires realignment; continuous instrument-presence detection remains unresolved. Host checks pass; full ESP32 compilation and physical operation still require verification.
+The dashboard infers a connected 2D square-grid layout from relative gyro yaw and face occupancy. Start supported and still with all N marks aligned; use 90-degree rotations. The IMU may have any fixed mounting angle; tracking tolerates up to 20° of tilt from the calibrated pose. Ambiguous layouts are shown as alternatives and can be confirmed by the operator. Gyro drift requires realignment; continuous instrument-presence detection remains unresolved. Host checks pass; full ESP32 compilation and physical operation still require verification.
 
 For serial sensor diagnostics, open Serial Monitor at 115200 baud with a newline and send `--debug`. Details and other commands are in [the run guide](HOW_TO_RUN.md#serial-sensor-debug-mode).
 
@@ -27,7 +27,7 @@ For serial sensor diagnostics, open Serial Monitor at 115200 baud with a newline
 | [Resources/](Resources/) | Supporting references |
 | [Presentation/](Presentation/) | Presentation PDFs and editable slide source |
 
-After dashboard edits, run `python3 Code/Dashboard/embed.py`, compile, and reflash every board. Keep all three headers beside the sketch: `DashboardPage.h`, `DebugCommand.h` and `PlanarYaw.h`. Historical prototypes and obsolete documentation are available in Git history.
+After dashboard edits, run `python3 Code/Dashboard/embed.py`, compile, and reflash every board. Keep all four headers beside the sketch: `DashboardPage.h`, `DebugCommand.h`, `PlanarYaw.h` and `PulseOutput.h`. Historical prototypes and obsolete documentation are available in Git history.
 
 ## Verification
 
@@ -37,6 +37,8 @@ From the repository root, with Python 3, Node.js and a C++17-capable `g++`:
 python3 Code/tests/test_dynamic_identity.py
 python3 Code/tests/test_gateway_election.py
 python3 Code/tests/test_sensor_debug.py
+python3 Code/tests/test_feedback.py
+python3 Code/tests/test_imu_initialization.py
 python3 Code/tests/test_planar_yaw.py
 node Code/tests/test_layout.js
 node Code/tests/test_dashboard.js

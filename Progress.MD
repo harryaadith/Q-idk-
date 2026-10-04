@@ -1,3 +1,11 @@
+## Firmware review fixes
+
+Replaced blocking buzzer/motor delays with bounded nonblocking patterns, preventing simultaneous docking events from causing gyro sample gaps. Validated optional magnetic identity/setup, accepted RC522 v1 and v2 diagnostic identities, treated IR readings as occupancy rather than identity failures, and restored brownout protection. GPIO assignments remain unchanged. Added feedback and IMU initialization regression checks; full ESP32 build/hardware validation remains outstanding.
+
+## Gyro mounting tolerance update
+
+Calibration now learns the gravity direction and biases on all three gyro axes, supporting tilted and sideways IMU mounts. Relative yaw uses the corrected angular rate projected onto gravity. The stationary window remains three continuous seconds; tracking tolerates up to 20° of tilt from the calibrated pose. Reflash every brick to use this change. This supersedes historical Z-axis-only calibration descriptions below.
+
 # Modular Smart Surgery Tray (Microbots / Smart Bricks) — Universal Progress & Implementation Tracker
 
 **Project:** Autonomous Multi-Agent Smart Bricks (Smart Surgery Tray)  

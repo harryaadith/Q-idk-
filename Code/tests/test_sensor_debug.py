@@ -38,6 +38,7 @@ bool debugEnabled=false;uint32_t lastSensorDebugPrint=0;int probeCount=0,reinitC
 bool whoamiEnabled=false;uint32_t lastWhoAmIPrint=0;
 #define MPU9250_I2C_ADDR 0x68
 #define AK8963_I2C_ADDR 0x0C
+int lastI2cReadError=0,lastI2cReadBytes=1;
 uint8_t i2cReadByte(uint8_t dev, uint8_t reg) {
   if (dev == 0x68 && reg == 0x75) return 0x71;
   if (dev == 0x0C && reg == 0x00) return 0x48;
@@ -54,7 +55,11 @@ const char* FACE_NAMES[]={"NORTH","EAST","SOUTH","WEST"};
 const uint8_t IR_PINS[]={34,35,32,33};
 bool irFaceDetected[4]={}; uint8_t irDebounceCounters[4]={};
 int digitalRead(uint8_t pin){return pin==35 ? 0 : 1;}
-struct RFID { int VersionReg=0; int PCD_ReadRegister(int){return 0x92;} } rfid;
+int readerVersion=0x92;
+struct RFID { int VersionReg=0; int PCD_ReadRegister(int){return readerVersion;} } rfid;
+#define IR_ACTIVE_LOW true
+#define LOW 0
+#define HIGH 1
 #define TOTAL_SWARM_BRICKS 4
 struct Peer {bool active=false;uint64_t uid=0;float rssi_ema=0;bool is_close=false;uint32_t last_seen_ms=0;} peers[5];
 """
@@ -113,6 +118,10 @@ int main(){
  assert(Serial.output.find("AK8963")!=std::string::npos);
  assert(Serial.output.find("RFID MFRC522")!=std::string::npos);
  assert(Serial.output.find("IR NORTH")!=std::string::npos);
+ assert(Serial.output.find("OVERALL STATUS: ALL_MATCH")!=std::string::npos);
+ readerVersion=0x91;Serial.output.clear();printSensorWhoAmI();
+ assert(Serial.output.find("Expected=0x91, Received=0x91 -> Match: TRUE")!=std::string::npos);
+ readerVersion=0x92;
  Serial.output.clear();
  Serial.input="--kill-whoami\n";serviceSerialDebug();assert(!whoamiEnabled);
  assert(Serial.output.find("killed")!=std::string::npos);

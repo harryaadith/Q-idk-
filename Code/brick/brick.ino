@@ -24,7 +24,7 @@
  *      - System boot chime
  *  8. 9-DoF IMU + Magnetometer (MPU9250 / AK8963 on I2C: SDA=GPIO 21, SCL=GPIO 22):
  *      - Real-time 3-axis accelerometer and gyroscope tracking
- *      - AK8963 3-axis magnetometer for Magnetic North compass heading
+ *      - Optional AK8963 readings for diagnostics; no magnetic heading correction
  *      - Pitch/Roll and aligned-start relative gyro yaw; magnetic heading is not required
  *  9. ERM Vibration Motor Actuator (GPIO 26):
  *      - Tactile haptic feedback on RFID token scans
@@ -43,10 +43,9 @@
 #include "DashboardPage.h"
 #include "DebugCommand.h"
 #include "PlanarYaw.h"
+#include "PulseOutput.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
 
 // ======================================================================================
 // 1. CONFIGURATION PARAMETERS (same sketch on every brick)
@@ -107,7 +106,7 @@ uint64_t nodeUid = 0;
 #define PIN_IR_SOUTH          32       // South / Bottom face sensor (D32)
 #define PIN_IR_WEST           33       // West / Left face sensor (D33)
 
-// Audio Buzzer (Active or driven passive buzzer)
+// Active-HIGH active buzzer module (passive buzzers require tone/PWM)
 #define PIN_BUZZER            27       // Driven via GPIO 27 (D27)
 
 // 9-DoF IMU + Magnetometer (I2C Bus: MPU9250 / AK8963)
@@ -250,70 +249,39 @@ void initErmMotor() {
   digitalWrite(PIN_ERM_MOTOR, LOW);
 }
 
+PulseOutput motorFeedback(PIN_ERM_MOTOR), buzzerFeedback(PIN_BUZZER);
+
 void triggerErmHaptic(uint16_t duration_ms) {
-  digitalWrite(PIN_ERM_MOTOR, HIGH);
-  delay(duration_ms);
-  digitalWrite(PIN_ERM_MOTOR, LOW);
+  motorFeedback.start(millis(),duration_ms);
 }
-
 void triggerErmDoublePulse() {
-  digitalWrite(PIN_ERM_MOTOR, HIGH);
-  delay(50);
-  digitalWrite(PIN_ERM_MOTOR, LOW);
-  delay(40);
-  digitalWrite(PIN_ERM_MOTOR, HIGH);
-  delay(70);
-  digitalWrite(PIN_ERM_MOTOR, LOW);
+  motorFeedback.start(millis(),50,40,70);
 }
-
-// Backward compatibility wrapper
-void triggerHapticFeedback(uint16_t duration_ms) {
-  triggerErmHaptic(duration_ms);
-}
-
-// Base Buzzer Pulse
+void triggerHapticFeedback(uint16_t duration_ms) { triggerErmHaptic(duration_ms); }
 void buzzBeep(uint16_t duration_ms) {
 #if BUZZER_ENABLED
-  digitalWrite(PIN_BUZZER, HIGH);
-  delay(duration_ms);
-  digitalWrite(PIN_BUZZER, LOW);
+  buzzerFeedback.start(millis(),duration_ms);
 #endif
 }
-
-// Sound Profile: RFID Scan Success (Happy double-chirp)
 void buzzRfidSuccess() {
 #if BUZZER_ENABLED
-  buzzBeep(60);
-  delay(40);
-  buzzBeep(100);
+  buzzerFeedback.start(millis(),60,40,100);
 #endif
 }
-
-// Sound Profile: Physical Docking / Close-to-All Consensus (Ascending chime)
 void buzzDockChime() {
 #if BUZZER_ENABLED
-  buzzBeep(40);
-  delay(30);
-  buzzBeep(80);
+  buzzerFeedback.start(millis(),40,30,80);
 #endif
 }
-
-// Sound Profile: Undock / Disconnect Event (Single short alert tone)
-void buzzUndockChime() {
-#if BUZZER_ENABLED
-  buzzBeep(120);
-#endif
-}
-
-// Sound Profile: Boot Startup Melodic Chime
+void buzzUndockChime() { buzzBeep(120); }
 void buzzBootChime() {
 #if BUZZER_ENABLED
-  buzzBeep(50);
-  delay(40);
-  buzzBeep(50);
-  delay(40);
-  buzzBeep(120);
+  buzzerFeedback.start(millis(),50,40,50,40,120);
 #endif
+}
+void serviceFeedback() {
+  const uint32_t now=millis();
+  motorFeedback.service(now); buzzerFeedback.service(now);
 }
 
 // ======================================================================================
@@ -386,10 +354,11 @@ bool initMpu9250() {
   Wire.beginTransmission(AK8963_I2C_ADDR);
   if (Wire.endTransmission() == 0) {
     uint8_t magWhoAmI = i2cReadByte(AK8963_I2C_ADDR, 0x00);
-    Serial.printf("[IMU] AK8963 Magnetometer online! ID: 0x%02X\n", magWhoAmI);
-    // Set 16-bit resolution, 100Hz continuous measurement mode 2
-    i2cWriteByte(AK8963_I2C_ADDR, 0x0A, 0x16);
-    imu.mag_detected = true;
+    const bool identityValid = lastI2cReadError == 0 && lastI2cReadBytes == 1 && magWhoAmI == 0x48;
+    // Keep optional magnetic diagnostics unavailable unless identity and setup succeed.
+    imu.mag_detected = identityValid && i2cWriteByte(AK8963_I2C_ADDR, 0x0A, 0x16);
+    Serial.printf("[IMU] AK8963 identity=0x%02X; diagnostics %s\n",magWhoAmI,
+                  imu.mag_detected ? "available" : "unavailable (identity/read/configuration failure)");
   } else {
     Serial.println("[IMU] Note: AK8963 Magnetometer at 0x0C not responding. (6-DoF Accel/Gyro operational)");
     imu.mag_detected = false;
@@ -827,7 +796,7 @@ void configureDashboardRoutes() {
     if(!imu.mpu_detected) { dashboardServer.send(409,"text/plain","Gateway IMU unavailable; fix it before alignment."); return; }
     gyroYaw.reset(); imu.heading=0;
     alignmentBroadcastActive=true; alignmentBroadcastStarted=millis();
-    dashboardServer.send(200,"text/plain","Alignment restart broadcast. All marked N faces must point the same way; keep every brick flat and still for at least 5 seconds. Check every card is ready.");
+    dashboardServer.send(200,"text/plain","Alignment restart broadcast. All marked N faces must point the same way; keep every brick supported and still for at least 5 seconds. Check every card is ready.");
   });
 }
 void serviceDashboard() {
@@ -964,11 +933,10 @@ bool printSensorWhoAmI() {
   // 1. MPU9250 Accelerometer / Gyroscope (Expected: 0x71 for genuine MPU9250)
   uint8_t mpuWho = i2cReadByte(MPU9250_I2C_ADDR, 0x75);
   bool mpuMatch = verifySensorWhoAmI("MPU6500/9250 (0x68 Reg 0x75)", mpuWho == 0x70 ? 0x70 : 0x71, mpuWho, true);
+  mpuMatch = mpuMatch && lastI2cReadError == 0 && lastI2cReadBytes == 1;
   if (!mpuMatch) {
     allMatch = false;
-    if (mpuWho == 0x70) {
-      Serial.println("         --> NOTE: 0x70 indicates MPU-6500 silicon (missing or bootleg AK8963 magnetometer).");
-    } else if (mpuWho == 0xFF || mpuWho == 0x00) {
+    if (lastI2cReadError != 0 || lastI2cReadBytes != 1 || mpuWho == 0xFF || mpuWho == 0x00) {
       Serial.println("         --> NOTE: No response on I2C address 0x68. Verify SDA=21, SCL=22, NCS=3V3, AD0=GND.");
     }
   }
@@ -976,6 +944,7 @@ bool printSensorWhoAmI() {
   // 2. AK8963 Magnetometer (Expected: 0x48 on I2C bypass address 0x0C)
   uint8_t magWho = i2cReadByte(AK8963_I2C_ADDR, 0x00);
   bool magMatch = verifySensorWhoAmI("AK8963 Mag (0x0C Reg 0x00)", 0x48, magWho, true);
+  magMatch = magMatch && lastI2cReadError == 0 && lastI2cReadBytes == 1;
   if (!magMatch) {
     Serial.println("         --> Magnetometer is optional; relative gyro yaw still works.");
     if (magWho == 0xFF || magWho == 0x00) {
@@ -985,7 +954,7 @@ bool printSensorWhoAmI() {
 
   // 3. RFID MFRC522 (Expected: 0x92 for v2.0 or 0x91 for v1.0)
   uint8_t rfidVer = rfid.PCD_ReadRegister(rfid.VersionReg);
-  bool rfidMatch = verifySensorWhoAmI("RFID MFRC522 (Reg 0x37)", 0x92, rfidVer, true);
+  bool rfidMatch = verifySensorWhoAmI("RFID MFRC522 (Reg 0x37)", rfidVer == 0x91 ? 0x91 : 0x92, rfidVer, true);
   if (!rfidMatch) {
     allMatch = false;
     if (rfidVer == 0x00 || rfidVer == 0xFF) {
@@ -993,16 +962,12 @@ bool printSensorWhoAmI() {
     }
   }
 
-  // 4. 4x Directional IR Sensors (Expected: 1 / HIGH when unobstructed in open air)
+  // IR obstacle sensors have no identity register. An occupied face is not a sensor fault.
   for (int i = 0; i < 4; i++) {
-    int irVal = digitalRead(IR_PINS[i]);
-    char label[32];
-    snprintf(label, sizeof(label), "IR %s (GPIO %u)", FACE_NAMES[i], IR_PINS[i]);
-    bool irMatch = verifySensorWhoAmI(label, 1, irVal, false);
-    if (!irMatch) {
-      allMatch = false;
-      Serial.printf("         --> NOTE: Face %s reading LOW (0) -> Docked/obstacle detected or pin tied low.\n", FACE_NAMES[i]);
-    }
+    const int raw = digitalRead(IR_PINS[i]);
+    const bool occupied = IR_ACTIVE_LOW ? raw == LOW : raw == HIGH;
+    Serial.printf("[WHOAMI] IR %s (GPIO %u): raw=%d occupied=%u (state only; no identity/health check)\n",
+                  FACE_NAMES[i],IR_PINS[i],raw,occupied);
   }
 
   Serial.printf("---------------------------------------------------------------------------------\n");
@@ -1068,8 +1033,7 @@ void serviceSerialDebug() {
 // 11. ARDUINO SETUP & MAIN LOOP
 // ======================================================================================
 void setup() {
-  // Disable hardware brownout detector to prevent reboot loops from Wi-Fi RF power surges & heavy peripheral load
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  // Leave brownout protection enabled; inadequate supplies must be corrected in hardware.
 
   nodeUid = ESP.getEfuseMac();
   receivedPackets = xQueueCreate(16, sizeof(ReceivedPacket));
@@ -1081,7 +1045,7 @@ void setup() {
   Serial.println("=============================================================");
   Serial.println("     MULTI-AGENT SMART BRICKS (MICROBOTS) FIRMWARE           ");
   Serial.printf ("     Node Identity: BRICK #%d of %d                          \n", BRICK_ID, TOTAL_SWARM_BRICKS);
-  Serial.println("     Pin Map: All GPIOs <= 35 (Compatible with 30-Pin ESP32) \n");
+  Serial.println("     Pin Map: All GPIOs <= 35 (verify classic ESP32-WROOM board pinout) \n");
   Serial.println("=============================================================");
 
   // Initialize LED Pins
@@ -1108,10 +1072,6 @@ void setup() {
     irDebounceCounters[i] = 0;
   }
   Serial.println("[IR] 4-Face Directional IR Sensors initialized (North:34, East:35, South:32, West:33)");
-
-  // Initial Boot Acoustic & Haptic Chime
-  buzzBootChime();
-  triggerErmHaptic(50); // 50ms tactile pulse confirming ERM motor is working
 
   // Initialize I2C Bus for MPU9250
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
@@ -1172,7 +1132,9 @@ void setup() {
   }
 
   configureDashboardRoutes();
-  Serial.println("[YAW] Align every marked N face the same way, keep flat and still for 3 seconds. Gyro yaw is relative and drifts.");
+  buzzBootChime();
+  triggerErmHaptic(50); // Start feedback after setup; loop services it without blocking.
+  Serial.println("[YAW] Align every marked N face the same way, keep supported and still for 3 seconds. Gyro yaw is relative and drifts.");
   Serial.println("[DEBUG] Send --debug with newline at 115200 baud for all sensor readings; --debug-i2c probes the IMU bus.");
   if(debugEnabled) { printDebugBus(); printSensorDebug(); }
   Serial.printf("[INFO] Brick #%d initialization complete. Running swarm loop...\n\n", BRICK_ID);
@@ -1190,9 +1152,11 @@ void loop() {
   // 2. Poll 9-DoF IMU & Magnetometer for Self-Orientation
   readMpu9250();
 
-  // 3. Check RFID Reader for local neighbor tag
+  // 3. Check top-facing RFID reader for instrument tags
   checkRfidReader();
 
+  // Refresh time after sensor/HTTP work before scheduling telemetry.
+  now = millis();
   // 4. Broadcast local state packet periodically
   if (now - lastBroadcastTime > BROADCAST_INTERVAL_MS) {
     lastBroadcastTime = now;
@@ -1213,6 +1177,7 @@ void loop() {
   }
 
   serviceSerialDebug();
+  serviceFeedback();
 
   // Small non-blocking yield for FreeRTOS scheduler
   delay(10);

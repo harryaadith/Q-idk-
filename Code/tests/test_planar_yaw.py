@@ -4,6 +4,7 @@ code=Path(__file__).resolve().parents[1]
 source=r'''
 #include <cassert>
 #include <cmath>
+#include <initializer_list>
 #include "PlanarYaw.h"
 void calibrate(PlanarYaw &yaw, uint32_t start=100, float bias=.5f, float z=1) {
  for(uint32_t t=0;t<=3000;t+=100) yaw.sample(start+t,0,0,z,0,0,bias);
@@ -22,6 +23,20 @@ int main() {
  assert(std::fabs(yaw.yaw()-90)<.01); // Upside-down sensor, same clockwise physical rotation.
  yaw.reset();for(uint32_t t=100;t<3100;t+=100) yaw.sample(t,0,0,1,0,0,10);
  assert(yaw.state()==PlanarYaw::Calibrating);calibrate(yaw,3200);
+ // A tilted or sideways IMU mount calibrates and tracks the physical vertical axis.
+ for (float tilt : {0.1745329f, .7853982f, 1.5707963f}) {
+  yaw.reset();float x=std::sin(tilt), z=std::cos(tilt);
+  for(uint32_t t=100;t<=3100;t+=100) yaw.sample(t,x,0,z,.4,-.3,.5);
+  assert(yaw.state()==PlanarYaw::Ready);
+  for(uint32_t t=3200;t<=4100;t+=100) yaw.sample(t,x,0,z,.4-90*x,-.3,.5-90*z);
+  assert(std::fabs(yaw.yaw()-90)<.02);
+ }
+ yaw.reset();calibrate(yaw);yaw.sample(3200,.173648f,0,.984808f,0,0,.5);
+ assert(yaw.state()==PlanarYaw::Ready); // 10-degree tilt is tolerated.
+ yaw.reset();for(uint32_t t=100;t<=4000;t+=100) yaw.sample(t,0,0,0,0,0,0);
+ assert(yaw.state()==PlanarYaw::Calibrating); // Free fall is not a valid reference.
+ yaw.reset();for(uint32_t t=100;t<=4000;t+=100) yaw.sample(t,0,0,1,t%200 ? 1 : -1,0,0);
+ assert(yaw.state()==PlanarYaw::Calibrating); // Noise on X is checked too.
  yaw.reset();calibrate(yaw,0xFFFFFF00u);assert(yaw.valid(uint32_t(0xFFFFFF00u+3000u))); // millis wrap
  yaw.reset();calibrate(yaw);yaw.sample(3200,0,0,1,0,0,NAN);assert(yaw.state()==PlanarYaw::TrackingLost);
  yaw.reset();calibrate(yaw);for(uint32_t t=3200;t<=8100;t+=100) yaw.sample(t,0,0,1,0,0,-89.5);
@@ -32,4 +47,4 @@ with tempfile.TemporaryDirectory() as tmp:
  path=Path(tmp);(path/'yaw.cpp').write_text(source)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-I',str(code/'brick'),str(path/'yaw.cpp'),'-o',str(path/'yaw')],check=True)
  subprocess.run([str(path/'yaw')],check=True)
-print('PASS: stationary bias, relative yaw, inverted mount, drift freshness, gaps/tilt/saturation, explicit reset and timer wrap.')
+print('PASS: stationary bias, relative yaw, inverted/tilted/sideways mounts, drift freshness, gaps/tilt/saturation, explicit reset and timer wrap.')

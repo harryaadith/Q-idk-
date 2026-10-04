@@ -11,43 +11,69 @@ private:
   bool haveSample_ = false, haveWindow_ = false;
   uint32_t last_ = 0, windowStart_ = 0, alignedAt_ = 0;
   unsigned count_ = 0;
-  double sum_ = 0, sumSquares_ = 0;
-  float bias_ = 0, yaw_ = 0, zSign_ = 1;
-  void clearWindow() { haveWindow_ = false; count_ = 0; sum_ = 0; sumSquares_ = 0; }
+  double sums_[3] = {}, squares_[3] = {}, accelSums_[3] = {}, accelSquares_[3] = {};
+  float biases_[3] = {}, gravity_[3] = {}, yaw_ = 0;
+  void clearWindow() {
+    haveWindow_ = false; count_ = 0;
+    for (int i=0; i<3; ++i) sums_[i] = squares_[i] = accelSums_[i] = accelSquares_[i] = 0;
+  }
 public:
   void reset() { *this = PlanarYaw(); }
   State state() const { return state_; }
   float yaw() const { return yaw_; }
-  float bias() const { return bias_; }
+  float bias() const { return biases_[2]; }
   uint32_t alignmentAge(uint32_t now) const { return state_ == Ready ? now - alignedAt_ : 0; }
   bool valid(uint32_t now) const { return state_ == Ready && haveSample_ && now - last_ <= 500; }
   void sample(uint32_t now, float ax, float ay, float az, float gx, float gy, float gz) {
     if (state_ == TrackingLost) return; // Explicit realignment required; never guess lost turns.
     bool finite = std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az) &&
                   std::isfinite(gx) && std::isfinite(gy) && std::isfinite(gz);
-    bool flat = finite && std::fabs(ax) < .15f && std::fabs(ay) < .15f &&
-                std::fabs(az) > .85f && std::fabs(az) < 1.15f;
+    const float accel[3] = {ax, ay, az}, gyro[3] = {gx, gy, gz};
+    const float magnitude = std::sqrt(ax*ax + ay*ay + az*az);
+    const bool gravityLike = finite && magnitude > .85f && magnitude < 1.15f;
     uint32_t dt = haveSample_ ? now - last_ : 0;
     bool gap = haveSample_ && dt > 500;
     last_ = now; haveSample_ = true;
     if (state_ == Calibrating) {
-      bool still = flat && std::fabs(gx) < 3 && std::fabs(gy) < 3 && std::fabs(gz) < 3;
+      bool still = gravityLike && std::fabs(gx) < 3 && std::fabs(gy) < 3 && std::fabs(gz) < 3;
       if (!still || gap) { clearWindow(); return; }
       if (!haveWindow_) { clearWindow(); windowStart_ = now; haveWindow_ = true; }
-      count_++; sum_ += gz; sumSquares_ += double(gz) * gz;
+      count_++;
+      for (int i=0; i<3; ++i) {
+        sums_[i] += gyro[i]; squares_[i] += double(gyro[i])*gyro[i];
+        accelSums_[i] += accel[i]; accelSquares_[i] += double(accel[i])*accel[i];
+      }
       if (now - windowStart_ >= 3000 && count_ >= 20) {
-        double mean = sum_ / count_;
-        double variance = sumSquares_ / count_ - mean * mean;
-        if (variance > .0225) { clearWindow(); return; } // 0.15 deg/s standard deviation.
-        bias_ = float(mean); zSign_ = az > 0 ? -1.f : 1.f;
+        double accelVariance = 0;
+        for (int i=0; i<3; ++i) {
+          const double mean = sums_[i]/count_, amean = accelSums_[i]/count_;
+          if (squares_[i]/count_ - mean*mean > .0225) { clearWindow(); return; }
+          accelVariance += accelSquares_[i]/count_ - amean*amean;
+        }
+        if (accelVariance > .0025) { clearWindow(); return; } // Stable gravity, any mounting angle.
+        float lengthSquared = 0;
+        for (int i=0; i<3; ++i) {
+          biases_[i] = float(sums_[i]/count_);
+          gravity_[i] = float(accelSums_[i]/count_);
+          lengthSquared += gravity_[i]*gravity_[i];
+        }
+        const float length = std::sqrt(lengthSquared);
+        if (length < .85f) { clearWindow(); return; }
+        for (int i=0; i<3; ++i) gravity_[i] /= length;
         yaw_ = 0; alignedAt_ = now; state_ = Ready;
       }
       return;
     }
-    if (!flat || gap || std::fabs(gz) >= 240 || (az > 0 ? -1.f : 1.f) != zSign_) {
+    // Accept up to 20 degrees of tilt from the calibrated pose, including tilted sensor mounts.
+    const float dot = gravityLike ? (ax*gravity_[0]+ay*gravity_[1]+az*gravity_[2])/magnitude : 0;
+    if (!gravityLike || gap || dot < .9396926f ||
+        std::fabs(gx) >= 240 || std::fabs(gy) >= 240 || std::fabs(gz) >= 240) {
       state_ = TrackingLost; return;
     }
-    yaw_ = std::fmod(yaw_ + zSign_ * (gz - bias_) * (dt / 1000.f), 360.f);
+    // Project the corrected three-axis angular rate onto measured vertical; clockwise positive.
+    float rate = 0;
+    for (int i=0; i<3; ++i) rate -= (gyro[i]-biases_[i])*accel[i]/magnitude;
+    yaw_ = std::fmod(yaw_ + rate * (dt / 1000.f), 360.f);
     if (yaw_ < 0) yaw_ += 360.f;
   }
 };

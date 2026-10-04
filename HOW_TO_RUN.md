@@ -30,9 +30,9 @@ The intended application is a modular surgery-tray prototype: independently powe
 
 Each brick broadcasts telemetry over ESP-NOW on Wi-Fi channel 1. After discovery settles, the brick with the lowest live hardware identity hosts a Wi-Fi access point and serves the dashboard. Your laptop connects to that host, which reports its own data and the other bricks it can directly hear. The browser polls telemetry every 500 ms.
 
-The dashboard shows an inferred 2D tray configuration using relative gyro yaw and occupied faces, alongside live brick/RFID cards. No magnetometer is required. **Inference assumes all marked N faces share a starting direction, bricks remain flat, orientations are multiples of 90 degrees, all online bricks form one connected square-grid tray, and occupied IR faces touch only other bricks.** A unique fit is conditional on these assumptions, not independently measured peer identity. When several fits exist, select an alternative and optionally confirm it after checking the physical tray.
+The dashboard shows an inferred 2D tray configuration using relative gyro yaw and occupied faces, alongside live brick/RFID cards. No magnetometer is required. **Inference assumes all marked N faces share a starting direction, bricks move along the tray plane, orientations are multiples of 90 degrees, all online bricks form one connected square-grid tray, and occupied IR faces touch only other bricks.** A unique fit is conditional on these assumptions, not independently measured peer identity. When several fits exist, select an alternative and optionally confirm it after checking the physical tray.
 
-The gyroscope tracks changes in yaw from startup alignment. It has no absolute magnetic reference and drifts; physically realign all N marks and restart alignment whenever drift is noticeable. If samples are lost, the board tilts, or the gyro saturates, tracking becomes invalid instead of guessing missed turns.
+The gyroscope tracks changes in yaw from startup alignment. It has no absolute magnetic reference and drifts; physically realign all N marks and restart alignment whenever drift is noticeable. If samples are lost, the board tilts more than 20° from its calibrated pose, or the gyro saturates, tracking becomes invalid instead of guessing missed turns.
 
 ## 2. Parts and software
 
@@ -44,7 +44,7 @@ Per brick:
 - Four 3.3 V compatible, active-low digital IR obstacle sensors.
 - One MPU6500 or MPU9250 accelerometer/gyro module, using I2C address 0x68. A magnetometer is optional and is not used for layout yaw.
 - One common-cathode RGB LED and three 220–330 ohm resistors.
-- Buzzer module with a 3.3 V compatible signal input, or an appropriate driver for the buzzer used.
+- Active buzzer module with an active-HIGH, 3.3 V-compatible signal input and its rated supply, or an appropriate driver for a two-wire active buzzer.
 - ERM vibration motor with a transistor/MOSFET driver and flyback diode, if haptics are installed.
 - Wiring, a stable mount/enclosure, and a shared ground within each brick.
 
@@ -73,6 +73,7 @@ Use these files:
 | File | Purpose |
 | --- | --- |
 | `Code/brick/brick.ino` | The single firmware sketch to upload to every board |
+| `Code/brick/PulseOutput.h` | Nonblocking buzzer/motor patterns; keep beside sketch |
 | `Code/brick/PlanarYaw.h` | Aligned-start gyro bias and relative yaw tracker; keep beside sketch |
 | `Code/brick/DebugCommand.h` | Serial debug command parser; keep beside the sketch |
 | `Code/brick/DashboardPage.h` | Generated web assets; must stay beside the sketch |
@@ -89,28 +90,57 @@ Only `Code/brick/brick.ino` is a production upload target. Obsolete numbered ske
 
 Repeat the same wiring on every board. N/E/S/W are **brick-local side labels**, not permanent directions on the table. Mark the local N face on each enclosure and mount all IMUs with a consistent axis orientation relative to that mark. Keep the RFID antenna on top, away from the side docking faces.
 
-| Device pin / function | ESP32 connection |
-| --- | --- |
-| RC522 VCC, GND | 3V3, GND |
-| RC522 SCK, MISO, MOSI | GPIO 18, 19, 23 respectively |
-| RC522 SDA/SS, RST | GPIO 5, 4 respectively |
-| RGB red, green, blue anodes | GPIO 16, 17, 25 respectively, each through its own resistor |
-| RGB common cathode | GND |
-| IR local North OUT | GPIO 34 |
-| IR local East OUT | GPIO 35 |
-| IR local South OUT | GPIO 32 |
-| IR local West OUT | GPIO 33 |
-| All IR VCC, GND | 3V3, GND; verify the actual modules work at 3.3 V |
-| Buzzer module SIG | GPIO 27 |
-| MPU9250 VCC, GND | 3V3, GND |
-| MPU9250 SDA, SCL | GPIO 21, 22 respectively |
-| MPU9250 AD0, FSYNC | GND, GND |
-| MPU9250 NCS | 3V3, enabling I2C mode |
-| MPU9250 EDA, ECL, INT | Leave unconnected for this firmware |
-| Motor driver gate/base signal | GPIO 26 through the appropriate driver circuitry |
-| On-board status LED | GPIO 2, where supported by the selected board |
+This pin map assumes a **classic ESP32-WROOM development board** with these labelled pins exposed. Every signal GPIO is 35 or below. Numbers are GPIO labels, not physical header positions. ESP32-WROVER boards may reserve GPIO16/17 for PSRAM; do not use this wiring unchanged on those boards.
 
-The RC522 pin labelled SDA is its SPI chip-select here; it does not go on the IMU's I2C SDA bus. MPU9250 address is expected to be 0x68 and AK8963 address 0x0C. GPIO 34/35 are input-only and need valid externally driven digital signals from the IR modules.
+| From | To | Note |
+| --- | --- | --- |
+| ESP32 3V3 | RC522 3.3V/VCC | Use 3.3 V, not 5 V |
+| ESP32 GND | RC522 GND | Shared brick ground |
+| ESP32 GPIO18 | RC522 SCK | SPI clock |
+| RC522 MISO | ESP32 GPIO19 | SPI data into ESP32 |
+| ESP32 GPIO23 | RC522 MOSI | SPI data into reader |
+| ESP32 GPIO5 | RC522 SDA/SS | SPI chip select, **not I2C SDA** |
+| ESP32 GPIO4 | RC522 RST | Reset |
+| RC522 IRQ | Unconnected | Not used |
+| ESP32 3V3 | MPU6500/MPU9250 breakout VCC | For a 3.3 V-compatible breakout |
+| ESP32 GND | IMU GND | Shared brick ground |
+| ESP32 GPIO21 | IMU SDA | Bidirectional I2C data |
+| ESP32 GPIO22 | IMU SCL | I2C clock |
+| IMU AD0/SDO | ESP32 GND | Select address 0x68 |
+| IMU NCS/CS | ESP32 3V3 | I2C mode; if pin is exposed and breakout uses 3.3 V logic |
+| IMU FSYNC | ESP32 GND | If exposed; unused sync input |
+| IMU EDA, ECL, INT | Unconnected | Not used; no external magnetometer required |
+| ESP32 3V3 | North IR VCC | Module must work at 3.3 V |
+| ESP32 GND | North IR GND | Shared brick ground |
+| North IR OUT/DO | ESP32 GPIO34 | Active LOW; local N face |
+| ESP32 3V3 | East IR VCC | Module must work at 3.3 V |
+| ESP32 GND | East IR GND | Shared brick ground |
+| East IR OUT/DO | ESP32 GPIO35 | Active LOW; local E face |
+| ESP32 3V3 | South IR VCC | Module must work at 3.3 V |
+| ESP32 GND | South IR GND | Shared brick ground |
+| South IR OUT/DO | ESP32 GPIO32 | Active LOW; local S face |
+| ESP32 3V3 | West IR VCC | Module must work at 3.3 V |
+| ESP32 GND | West IR GND | Shared brick ground |
+| West IR OUT/DO | ESP32 GPIO33 | Active LOW; local W face |
+| ESP32 GPIO16 | 220–330 ohm resistor → RGB red anode | One resistor per colour |
+| ESP32 GPIO17 | 220–330 ohm resistor → RGB green anode | Common-cathode LED |
+| ESP32 GPIO25 | 220–330 ohm resistor → RGB blue anode | One resistor per colour |
+| RGB common cathode | ESP32 GND | Do not assume package lead order |
+| ESP32 GPIO27 | Active buzzer module SIG/IN | Active-HIGH, 3.3 V-compatible input |
+| Supply rated for buzzer module | Buzzer module VCC/+ | 3V3 only if module is rated for it |
+| Buzzer module GND/− | ESP32 GND | Shared brick ground |
+| ESP32 GPIO26 | Motor driver control | See driver wiring below |
+| ESP32 GPIO2 | On-board status LED | Already connected on supported boards; no wire needed |
+
+**Corrections and board-dependent issues:**
+
+- The old table omitted buzzer VCC and GND. The firmware uses HIGH/LOW pulses and requires an active buzzer or a module with its own oscillator. A bare passive buzzer requires tone/PWM firmware and suitable drive circuitry; a bare two-wire active buzzer must use a driver if its current exceeds GPIO capability.
+- GPIO34/35 are input-only and have no internal pull-ups/pull-downs. They are correctly assigned to IR inputs. If an IR OUT is open-collector without an onboard pull-up, wire ESP32 3V3 → 10 kohm resistor → OUT. A push-pull output or an existing suitable 3.3 V pull-up does not require an extra resistor. GPIO32/33 open-collector inputs also need a pull-up if the module lacks one. Never feed a 5 V output into any ESP32 GPIO; a module needing 5 V supply requires verified 3.3 V logic or level conversion.
+- GPIO5 is a boot-strapping pin. Its SPI chip-select assignment is valid, but the connected reader must not override its required boot-time level. GPIO2 is also a strapping pin; leave the existing onboard LED wiring alone. All GPIO numbers being below 36 does not imply compatibility with every ESP32 board.
+- GPIO16/17 are available on typical WROOM boards but can be occupied by PSRAM on WROVER variants. GPIO6–11 are reserved for flash on typical modules; GPIO1/3 are kept free for serial debugging. No reassignment is needed for the stated WROOM wiring.
+- IMU wiring applies to MPU6500/MPU9250 breakouts. AD0 must be grounded for the firmware's 0x68 address. SDA/SCL need pull-ups to 3.3 V (typically already on the breakout; if absent, add one approximately 4.7 kohm resistor from each line to 3V3). NCS is tied to the sensor's I/O supply for I2C mode; this guide assumes that supply is 3.3 V. The mounting angle need not be exactly level.
+
+Hardware references: [Espressif ESP32 GPIO restrictions](https://docs.espressif.com/projects/esp-idf/en/v5.2.8/esp32/api-reference/peripherals/gpio.html), [NXP MFRC522 datasheet](https://www.nxp.com/docs/en/data-sheet/MFRC522.pdf), [TDK MPU9250 datasheet](https://invensense.tdk.com/wp-content/uploads/2015/02/MPU-9250-Datasheet.pdf?v=5bc574a47246).
 
 For a discrete NPN motor driver: GPIO 26 → 1 kohm resistor → base; emitter → GND; collector → motor negative; motor positive → a supply rated for that motor. Put a flyback diode across the motor, cathode/band to positive and anode to negative. Join motor supply ground to the brick ground. Do not drive the motor directly from GPIO 26. Check module-specific buzzer and motor supply requirements. The motor-driver diagram below complements the pin table.
 
@@ -167,10 +197,11 @@ On Windows, use `py -3 Code/Dashboard/embed.py` or your installed Python launche
    ├── brick.ino
    ├── DashboardPage.h
    ├── DebugCommand.h
-   └── PlanarYaw.h
+   ├── PlanarYaw.h
+   └── PulseOutput.h
    ```
 
-   Do not move the `.ino` alone into a different directory. `embed.py` generates `DashboardPage.h`; `DebugCommand.h` and `PlanarYaw.h` are maintained source files and must also be present.
+   Do not move the `.ino` alone into a different directory. `embed.py` generates `DashboardPage.h`; `DebugCommand.h`, `PlanarYaw.h` and `PulseOutput.h` are maintained source files and must also be present.
 3. Confirm the ESP32 board profile and installed core version.
 4. Click **Verify** (checkmark). Do this before connecting and uploading to every board.
 5. Continue only after compilation succeeds. If it fails, retain the compiler output and use the troubleshooting table below. A successful host test is not a substitute for this build.
@@ -192,7 +223,7 @@ All boards must run the new version. Earlier firmware has a different radio pack
 
 ## 8. Check and calibrate each brick
 
-Test a brick alone first. After power-on, keep it flat and still for at least three continuous seconds. The automatic gyro calibration estimates stationary Z-axis bias, assigns current yaw zero and marks orientation ready. Calibration restarts its stationary window if movement/noise occurs. It is intentionally not saved across reboots because the reference is the current physical start direction.
+Test a brick alone first. After power-on, keep it supported and still for at least three continuous seconds. The automatic gyro calibration estimates stationary bias on all three gyro axes and the gravity direction, assigns current yaw zero and marks orientation ready. Calibration restarts its stationary window if movement/noise occurs. It is intentionally not saved across reboots because the reference is the current physical start direction.
 
 1. Power one brick, with its marked N face pointing in your chosen reference direction. Test within direct Wi-Fi range of your laptop.
 2. Join `SmartSurgeryTray` (password `smarttray22`) after initialization and election settle; allow about 10 seconds.
@@ -204,7 +235,7 @@ Test a brick alone first. After power-on, keep it flat and still for at least th
 8. Return the marked N face to the reference direction. Click **Realign all bricks / zero gyro yaw** and keep still for at least five seconds. Alone, this resets only the visible board; in a group the reset is broadcast to directly heard peers.
 9. Repeat this sensor check for each board. When starting the full tray, physically align all marked N faces again; individual zero references must correspond to the same direction.
 
-Flat means the IMU Z axis is approximately normal to the table. The tracker uses the measured gravity sign to handle an upward or downward Z mounting. It requires |ax| and |ay| below 0.15 g and |az| between 0.85 and 1.15 g. Mounting the sensor on its side is not supported. Calibration requires gyro XYZ rates below 3 degrees/s and a sufficiently stable Z bias for three seconds. These software checks do not prove the operator actually aligned all N marks; constant slow motion during bias calibration can produce a wrong reference, so keep still.
+The IMU can be mounted at any fixed angle, including sideways. Calibration requires total acceleration magnitude between 0.85 and 1.15 g, gyro XYZ rates below 3 degrees/s, standard deviation at most 0.15 degrees/s on each gyro axis, and stable acceleration (sum of axis variances at most 0.0025 g²) for three seconds with at least 20 samples. There is no overall calibration timeout. The tracker subtracts all three gyro biases and projects angular velocity onto measured gravity to track clockwise rotation. During tracking it tolerates up to 20° of tilt from the calibrated pose; larger tilts require realignment. Support the bricks in their normal tray position during calibration; their IMUs need not be exactly level. These software checks do not prove the operator actually aligned all N marks; constant slow motion during bias calibration can produce a wrong reference, so keep still.
 
 ## 9. Start the complete tray
 
@@ -347,12 +378,12 @@ I2C reports probe 0x68, 0x69 and 0x0C and read identity, power, bypass and magne
 | Dashboard reports disconnected | Check whether the host lost power or a lower-UID board caused a gateway change; rejoin hotspot and reload |
 | Number changed | Expected: display numbering depends on the active group; identify boards using hardware UIDs |
 | Relative yaw unknown | Check supported MPU6500/MPU9250 detection, fresh accel/gyro samples and stationary aligned calibration; a magnetometer is not needed |
-| Yaw drifted / map becomes inconsistent | Align all physical N marks, click group realignment, keep flat and still five seconds; gyro yaw has no absolute reference |
+| Yaw drifted / map becomes inconsistent | Align all physical N marks, click group realignment, keep supported and still five seconds; gyro yaw has no absolute reference |
 | IMU missing at 0x68 | Check SDA=21, SCL=22, AD0=GND, NCS=3V3, power and common ground |
 | MPU detected but magnetometer missing | Acceptable for relative gyro yaw; only investigate AK8963 if you separately need magnetic readings |
 | RFID reader reports warning | Check 3.3 V power, SPI wiring, SS=5, RST=4 and antenna/tag compatibility |
 | IR edge stuck on/off | Check active-low polarity, sensor supply/output level, sensitivity and enclosure obstruction; verify local face wiring |
-| Reset when radio/motor activates | Check supply, wiring resistance, decoupling and motor driver; the present sketch disables the brownout detector, which does not fix inadequate power |
+| Reset when radio/motor activates | Check supply, wiring resistance, decoupling and motor driver; brownout protection remains enabled; fix inadequate power rather than disabling protection |
 | Instruments disappear but UID remains | Expected: the field stores the last scan; removal tracking is not implemented |
 | Map differs from physical tray | Check assumptions, startup alignment, drift and possible layouts; IR does not measure peer identity |
 
@@ -421,6 +452,8 @@ For host checks, install Python 3, Node.js and a C++17-capable `g++` accessible 
 python3 Code/tests/test_dynamic_identity.py
 python3 Code/tests/test_gateway_election.py
 python3 Code/tests/test_sensor_debug.py
+python3 Code/tests/test_feedback.py
+python3 Code/tests/test_imu_initialization.py
 python3 Code/tests/test_planar_yaw.py
 node Code/tests/test_layout.js
 node Code/tests/test_dashboard.js
@@ -436,7 +469,7 @@ Close the browser and turn off each board's supply. Gyro reference/bias, last-re
 Current limits:
 
 - The map is inferred under aligned-start, 90-degree, connected-grid and correct-IR assumptions; some physical arrangements are ambiguous and are presented as alternatives. Direct face identities and absolute table coordinates are not measured.
-- The design assumes flat-table motion with sensor Z approximately normal to the table. Gyro yaw drifts and needs a common starting orientation, periodic realignment and fresh samples; no magnetometer correction is used.
+- The design assumes motion along the tray plane; the IMU may have any fixed mounting angle. Tilt tolerance is 20° from the calibrated pose. Gyro yaw drifts and needs a common starting orientation, periodic realignment and fresh samples; no magnetometer correction is used.
 - ESP-NOW is used for direct single-hop broadcasts; there is no multi-hop routing or robust distributed consensus under partitions.
 - Gateway changes can interrupt laptop connectivity and require manual Wi-Fi reconnection.
 - Display numbers may change; hardware UID is the stable identity.
@@ -445,3 +478,5 @@ Current limits:
 - Real ESP32 compilation and hardware acceptance remain outstanding until someone performs the build and checks described above.
 
 Codex assisted with the wireless firmware, dashboard, cleanup and this guide. Setup commands were checked against the cited official documentation; code-specific behavior was checked against the current repository source. Documentation does not substitute for the pending physical tests.
+
+Feedback uses nonblocking buzzer and motor patterns so simultaneous docking events do not pause gyro polling. A new event replaces an unfinished pattern on the same actuator. Serial identity diagnostics accept RC522 versions 0x91 and 0x92; IR readings report occupancy only and cannot verify sensor health.
