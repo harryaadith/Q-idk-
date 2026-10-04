@@ -1,5 +1,7 @@
 # Multi-Agent Smart Bricks (Microbots) — Setup & Quickstart Guide
 
+Start with the complete [HOW TO RUN guide](../HOW_TO_RUN.md) for setup from the beginning.
+
 This guide describes how to configure, upload, and verify the unified **Microbot Swarm (Smart Bricks)** firmware on your 4 ESP32 modules.
 
 > [!NOTE]

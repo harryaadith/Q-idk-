@@ -1,5 +1,7 @@
 # Wireless Smart Surgery Tray
 
+Start with the complete [HOW TO RUN guide](../../HOW_TO_RUN.md) for setup from the beginning.
+
 The single production sketch is `Code/brick/brick.ino`. Open it in Arduino IDE and upload the same version to every ESP32. Install the MFRC522 library and use ESP32 Arduino core 3.x (the receive callback uses its API). DashboardPage.h must remain beside the sketch. Old two-byte packet firmware is incompatible; reflash all bricks together. Firmware has not yet been fully board-compiled or tested on hardware.
 
 ## Connecting

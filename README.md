@@ -1,5 +1,7 @@
 # Project Title
 
+Start with the complete [HOW TO RUN guide](HOW_TO_RUN.md) for setup from the beginning.
+
 ### Team Details
 - Team Number: 22
 - Team Name: (Q)idk if i'm getting an internship
