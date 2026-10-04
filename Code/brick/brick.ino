@@ -42,6 +42,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include "DashboardPage.h"
+#include "DebugCommand.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "soc/soc.h"
@@ -185,6 +186,18 @@ struct ImuData {
 ImuData imu = {};
 uint32_t lastImuPollTime = 0;
 uint32_t lastMagSample = 0;
+uint32_t lastAccelSample = 0;
+int16_t rawAccel[3] = {}, rawGyro[3] = {}, rawMag[3] = {};
+int16_t rawTemperature = 0;
+int imuReadError = -1, imuReadBytes = 0, magReadError = -1, magReadBytes = 0;
+uint8_t magStatus1 = 0, magStatus2 = 0;
+int lastI2cReadError=-1, lastI2cReadBytes=0, magStatusReadError=-1, magStatusReadBytes=0;
+// Detailed diagnostics are opt-in. Override to 1 at build time for startup capture.
+#ifndef BRICK_DEBUG_DEFAULT
+#define BRICK_DEBUG_DEFAULT 0
+#endif
+bool debugEnabled = BRICK_DEBUG_DEFAULT;
+uint32_t lastSensorDebugPrint = 0;
 Preferences calibrationStore;
 bool compassCalibrated = false, compassCalibrating = false;
 uint32_t calibrationStarted = 0;
@@ -328,8 +341,10 @@ void i2cWriteByte(uint8_t devAddr, uint8_t regAddr, uint8_t data) {
 uint8_t i2cReadByte(uint8_t devAddr, uint8_t regAddr) {
   Wire.beginTransmission(devAddr);
   Wire.write(regAddr);
-  if (Wire.endTransmission(false) != 0) return 0xFF;
-  Wire.requestFrom((uint8_t)devAddr, (uint8_t)1);
+  lastI2cReadBytes=0;
+  lastI2cReadError=Wire.endTransmission(false);
+  if (lastI2cReadError != 0) return 0xFF;
+  lastI2cReadBytes=Wire.requestFrom((uint8_t)devAddr, (uint8_t)1);
   if (Wire.available()) {
     return Wire.read();
   }
@@ -387,8 +402,10 @@ void readMpu9250() {
   // Read 14 bytes from ACCEL_XOUT_H (0x3B)
   Wire.beginTransmission(MPU9250_I2C_ADDR);
   Wire.write(0x3B);
-  if (Wire.endTransmission(false) == 0) {
-    Wire.requestFrom((uint8_t)MPU9250_I2C_ADDR, (uint8_t)14);
+  imuReadError = Wire.endTransmission(false);
+  imuReadBytes = 0;
+  if (imuReadError == 0) {
+    imuReadBytes = Wire.requestFrom((uint8_t)MPU9250_I2C_ADDR, (uint8_t)14);
     if (Wire.available() >= 14) {
       uint8_t buf[14];
       for (int i = 0; i < 14; i++) {
@@ -401,6 +418,10 @@ void readMpu9250() {
       int16_t gx = (int16_t)((buf[8] << 8) | buf[9]);
       int16_t gy = (int16_t)((buf[10] << 8) | buf[11]);
       int16_t gz = (int16_t)((buf[12] << 8) | buf[13]);
+
+      rawAccel[0]=ax; rawAccel[1]=ay; rawAccel[2]=az;
+      rawGyro[0]=gx; rawGyro[1]=gy; rawGyro[2]=gz;
+      rawTemperature=tempRaw; lastAccelSample=now;
 
       // Convert to physical units (+/-2g -> 16384 LSB/g; +/-250 deg/s -> 131 LSB/deg/s)
       imu.accel_x = ax / 16384.0f;
@@ -420,11 +441,16 @@ void readMpu9250() {
   // Read Magnetometer if available
   if (imu.mag_detected) {
     uint8_t st1 = i2cReadByte(AK8963_I2C_ADDR, 0x02); // Data ready check
-    if (st1 & 0x01) {
+    magStatus1 = st1;
+    magStatusReadError = lastI2cReadError;
+    magStatusReadBytes = lastI2cReadBytes;
+    if (magStatusReadError == 0 && magStatusReadBytes == 1 && (st1 & 0x01)) {
       Wire.beginTransmission(AK8963_I2C_ADDR);
       Wire.write(0x03); // HXL
-      if (Wire.endTransmission(false) == 0) {
-        Wire.requestFrom((uint8_t)AK8963_I2C_ADDR, (uint8_t)7);
+      magReadError = Wire.endTransmission(false);
+      magReadBytes = 0;
+      if (magReadError == 0) {
+        magReadBytes = Wire.requestFrom((uint8_t)AK8963_I2C_ADDR, (uint8_t)7);
         if (Wire.available() >= 7) {
           uint8_t magBuf[7];
           for (int i = 0; i < 7; i++) {
@@ -435,6 +461,7 @@ void readMpu9250() {
           int16_t mz = (int16_t)(magBuf[4] | (magBuf[5] << 8));
           uint8_t st2 = magBuf[6]; // Must read ST2 to unlock next reading
 
+          rawMag[0]=mx; rawMag[1]=my; rawMag[2]=mz; magStatus2=st2;
           if (!(st2 & 0x08)) { // No magnetic sensor overflow
             imu.mag_x = mx * 0.15f;
             imu.mag_y = my * 0.15f;
@@ -855,6 +882,78 @@ void printDiagnosticStatus() {
   Serial.println("-------------------------------------------------------------");
 }
 
+// Opt-in serial sensor diagnostics. Never re-read RFID cards or drain magnetic samples here.
+long sampleAge(uint32_t timestamp) {
+  return timestamp ? (long)(millis() - timestamp) : -1;
+}
+void debugRegister(uint8_t address, uint8_t reg, const char* label) {
+  Wire.beginTransmission(address); Wire.write(reg);
+  uint8_t error = Wire.endTransmission(false);
+  Serial.printf("[DEBUG I2C] %s addr=0x%02X reg=0x%02X tx_status=%u", label,address,reg,error);
+  if (!error) {
+    int count=Wire.requestFrom(address,(uint8_t)1);
+    if(count==1 && Wire.available()) Serial.printf(" value=0x%02X",Wire.read());
+    else Serial.printf(" read_bytes=%d (unavailable)",count);
+  }
+  Serial.println();
+}
+void printDebugBus() {
+  Serial.println("[DEBUG I2C] configured SDA=21 SCL=22; NCS=3V3 AD0=GND expected. tx_status=0 means ACK; nonzero is Wire error.");
+  Serial.printf("[DEBUG I2C] pin levels SDA=%d SCL=%d (snapshot, not a bus integrity test)\n",digitalRead(PIN_I2C_SDA),digitalRead(PIN_I2C_SCL));
+  const uint8_t addresses[]={0x68,0x69,0x0C};
+  for(uint8_t address : addresses) {
+    Wire.beginTransmission(address);
+    Serial.printf("[DEBUG I2C] probe 0x%02X tx_status=%u\n",address,Wire.endTransmission());
+  }
+  debugRegister(0x68,0x75,"IMU WHO_AM_I");
+  debugRegister(0x69,0x75,"alternate IMU WHO_AM_I");
+  debugRegister(0x68,0x6B,"IMU PWR_MGMT_1");
+  debugRegister(0x68,0x6A,"IMU USER_CTRL");
+  debugRegister(0x68,0x37,"IMU INT_PIN_CFG (bypass)");
+  debugRegister(0x0C,0x00,"mag WIA identity");
+  debugRegister(0x0C,0x0A,"mag CNTL1 mode");
+}
+void printSensorDebug() {
+  Serial.printf("\n[DEBUG] uid=%s brick=%u uptime_ms=%lu\n",uidText(nodeUid).c_str(),BRICK_ID,(unsigned long)millis());
+  Serial.printf("[DEBUG IMU] boot_detected=%u sample_age_ms=%ld last_tx_status=%d last_read_bytes=%d/14\n",imu.mpu_detected,sampleAge(lastAccelSample),imuReadError,imuReadBytes);
+  Serial.printf("[DEBUG ACCEL] raw_xyz=%d,%d,%d g_xyz=%.4f,%.4f,%.4f\n",rawAccel[0],rawAccel[1],rawAccel[2],imu.accel_x,imu.accel_y,imu.accel_z);
+  Serial.printf("[DEBUG GYRO] raw_xyz=%d,%d,%d deg_s_xyz=%.3f,%.3f,%.3f temp_raw=%d\n",rawGyro[0],rawGyro[1],rawGyro[2],imu.gyro_x,imu.gyro_y,imu.gyro_z,rawTemperature);
+  Serial.printf("[DEBUG MAG] boot_detected=%u sample_age_ms=%ld last_tx_status=%d last_read_bytes=%d/7 ST1=0x%02X ST1_tx_status=%d ST1_read_bytes=%d/1 ST2=0x%02X overflow=%u\n",imu.mag_detected,sampleAge(lastMagSample),magReadError,magReadBytes,magStatus1,magStatusReadError,magStatusReadBytes,magStatus2,!!(magStatus2&0x08));
+  Serial.printf("[DEBUG MAG] raw_xyz=%d,%d,%d uT_xyz=%.3f,%.3f,%.3f\n",rawMag[0],rawMag[1],rawMag[2],imu.mag_x,imu.mag_y,imu.mag_z);
+  Serial.printf("[DEBUG ORIENTATION] pitch=%.2f roll=%.2f heading=%.2f heading_valid=%u calibrated=%u calibrating=%u\n",imu.pitch,imu.roll,imu.heading,headingIsValid(),compassCalibrated,compassCalibrating);
+  Serial.println("[DEBUG] Readings are cached; sample_age_ms=-1 means NO sample, not a real zero measurement.");
+  for(int i=0;i<4;i++) Serial.printf("[DEBUG IR] face=%s gpio=%u raw=%d docked=%u debounce=%u\n",FACE_NAMES[i],IR_PINS[i],digitalRead(IR_PINS[i]),irFaceDetected[i],irDebounceCounters[i]);
+  Serial.printf("[DEBUG RFID] reader_version=0x%02X last_instrument_uid=%s scan_age_ms=%ld recent_scan=%u (not continuous presence)\n",rfid.PCD_ReadRegister(rfid.VersionReg),lastReadUid.length()?lastReadUid.c_str():"none",lastReadUid.length()?sampleAge(rfidDetectedTime):-1,rfidActive);
+  for(int i=1;i<=TOTAL_SWARM_BRICKS;i++) if(peers[i].active)
+    Serial.printf("[DEBUG RADIO] peer_uid=%s RSSI_ema_dBm=%.2f close=%u age_ms=%lu\n",uidText(peers[i].uid).c_str(),peers[i].rssi_ema,peers[i].is_close,(unsigned long)(millis()-peers[i].last_seen_ms));
+}
+void applyDebugCommand(DebugCommand command) {
+  if(command==DebugCommand::Enable) {
+    debugEnabled=true; Serial.println("[DEBUG] enabled; detailed sensors every 500ms; --no-debug disables.");
+    printDebugBus(); printSensorDebug(); lastSensorDebugPrint=millis();
+  } else if(command==DebugCommand::Disable) {
+    debugEnabled=false; Serial.println("[DEBUG] disabled (normal event/status logs remain).");
+  } else if(command==DebugCommand::Probe) {
+    printDebugBus();
+  } else if(command==DebugCommand::Reinitialize) {
+    // Explicit command only: allows retry after correcting an absent-at-boot sensor.
+    imu.mpu_detected=false; imu.mag_detected=false;
+    lastAccelSample=0; lastMagSample=0; imuReadError=-1; magReadError=-1;
+    imuReadBytes=0; magReadBytes=0; magStatus1=0; magStatus2=0; magStatusReadError=-1; magStatusReadBytes=0;
+    initMpu9250(); printDebugBus();
+  } else if(command==DebugCommand::Unknown) {
+    Serial.println("[DEBUG] commands: --debug, --no-debug, --debug-i2c, --debug-reinit (send newline)");
+  }
+}
+void serviceSerialDebug() {
+  static DebugCommandParser parser;
+  for(int budget=0;budget<64 && Serial.available();budget++)
+    applyDebugCommand(parser.feed((char)Serial.read()));
+  if(debugEnabled && millis()-lastSensorDebugPrint>=500) {
+    lastSensorDebugPrint=millis(); printSensorDebug();
+  }
+}
+
 // ======================================================================================
 // 11. ARDUINO SETUP & MAIN LOOP
 // ======================================================================================
@@ -967,6 +1066,8 @@ void setup() {
   }
 
   configureDashboardRoutes();
+  Serial.println("[DEBUG] Send --debug with newline at 115200 baud for all sensor readings; --debug-i2c probes the IMU bus.");
+  if(debugEnabled) { printDebugBus(); printSensorDebug(); }
   Serial.printf("[INFO] Brick #%d initialization complete. Running swarm loop...\n\n", BRICK_ID);
 }
 
@@ -1003,6 +1104,8 @@ void loop() {
     lastDebugPrintTime = now;
     printDiagnosticStatus();
   }
+
+  serviceSerialDebug();
 
   // Small non-blocking yield for FreeRTOS scheduler
   delay(10);

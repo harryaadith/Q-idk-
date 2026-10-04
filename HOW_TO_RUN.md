@@ -18,6 +18,8 @@ This is the complete entry point for setting up the current project from an unco
 10. [Understand the dashboard](#10-understand-the-dashboard)
 11. [Run acceptance checks](#11-run-acceptance-checks)
 12. [Troubleshooting](#12-troubleshooting)
+    - [Serial sensor debug mode](#serial-sensor-debug-mode)
+    - [IMU/magnetometer diagnostic checklist](#imumagnetometer-diagnostic-checklist)
 13. [Edit and update the project](#13-edit-and-update-the-project)
 14. [Optional command-line build and tests](#14-optional-command-line-build-and-tests)
 15. [Shutdown, restart and known limitations](#15-shutdown-restart-and-known-limitations)
@@ -69,14 +71,14 @@ Use these files:
 | File | Purpose |
 | --- | --- |
 | `Code/brick/brick.ino` | The single firmware sketch to upload to every board |
+| `Code/brick/DebugCommand.h` | Serial debug command parser; keep beside the sketch |
 | `Code/brick/DashboardPage.h` | Generated web assets; must stay beside the sketch |
 | `Code/Dashboard/dashboard.html` | Editable dashboard page and styles |
 | `Code/Dashboard/dashboard.js` | Editable dashboard behavior |
 | `Code/Dashboard/embed.py` | Generates the firmware's web-assets header |
-| `Code/INSTRUCTIONS.MD` | Additional circuit details |
 | `Code/tests/` | Host checks and historical simulations |
 
-Files under `Code/Archive/` are historical references, not the current upload target. The old numbered production sketches have been removed.
+Only `Code/brick/brick.ino` is a production upload target. Obsolete numbered sketches, prototypes and old protocol simulations have been removed from this checkout; earlier versions remain in Git history.
 
 ## 4. Wire each brick
 
@@ -105,7 +107,26 @@ Repeat the same wiring on every board. N/E/S/W are **brick-local side labels**, 
 
 The RC522 pin labelled SDA is its SPI chip-select here; it does not go on the IMU's I2C SDA bus. MPU9250 address is expected to be 0x68 and AK8963 address 0x0C. GPIO 34/35 are input-only and need valid externally driven digital signals from the IR modules.
 
-For a discrete NPN motor driver: GPIO 26 → 1 kohm resistor → base; emitter → GND; collector → motor negative; motor positive → a supply rated for that motor. Put a flyback diode across the motor, cathode/band to positive and anode to negative. Join motor supply ground to the brick ground. Do not drive the motor directly from GPIO 26. Check module-specific buzzer and motor supply requirements. Full wiring illustrations are in `Code/INSTRUCTIONS.MD`.
+For a discrete NPN motor driver: GPIO 26 → 1 kohm resistor → base; emitter → GND; collector → motor negative; motor positive → a supply rated for that motor. Put a flyback diode across the motor, cathode/band to positive and anode to negative. Join motor supply ground to the brick ground. Do not drive the motor directly from GPIO 26. Check module-specific buzzer and motor supply requirements. The motor-driver diagram below complements the pin table.
+
+### Motor-driver wiring diagram
+
+```text
+                     Motor-rated supply (+)
+                          |           |
+                       Motor (+)   Diode cathode (band)
+                       Motor (-)   Diode anode
+                          |           |
+                          +-----------+
+                          |
+                    NPN collector
+GPIO 26 -- 1 kohm -- NPN base
+                    NPN emitter
+                          |
+                     Shared GND
+```
+
+Confirm the actual transistor's pinout from its datasheet; E/B/C positions vary by part and package. The motor-rated supply ground and ESP32 ground must be connected. If using a complete driver module, use its signal and power requirements rather than duplicating a driver already on the board.
 
 ## 5. Install the Arduino environment
 
@@ -134,7 +155,16 @@ python3 Code/Dashboard/embed.py
 On Windows, use `py -3 Code/Dashboard/embed.py` or your installed Python launcher. The script updates only `Code/brick/DashboardPage.h`; it creates no numbered sketches.
 
 1. In Arduino IDE choose **File → Open** and select `Code/brick/brick.ino`.
-2. Confirm `DashboardPage.h` remains in the same `brick` folder. Do not move the `.ino` alone into a different directory.
+2. Confirm these three files remain together:
+
+   ```text
+   Code/brick/
+   ├── brick.ino
+   ├── DashboardPage.h
+   └── DebugCommand.h
+   ```
+
+   Do not move the `.ino` alone into a different directory. `embed.py` generates `DashboardPage.h`; `DebugCommand.h` is a maintained source file and must also be present.
 3. Confirm the ESP32 board profile and installed core version.
 4. Click **Verify** (checkmark). Do this before connecting and uploading to every board.
 5. Continue only after compilation succeeds. If it fails, retain the compiler output and use the troubleshooting table below. A successful host test is not a substitute for this build.
@@ -149,7 +179,7 @@ Do not change `BRICK_ID`: it is now a runtime display number. The source must re
 4. Click **Upload** and wait for a successful completion message.
 5. If upload stalls while connecting, use your board's BOOT/EN procedure; commonly hold BOOT during the connection attempt and release once writing begins.
 6. Open Serial Monitor at **115200 baud**, press EN/reset, and inspect the startup log.
-7. Check for IMU/magnetometer detection, RFID initialization, ESP-NOW readiness, and eventually the dashboard access message.
+7. Check for IMU/magnetometer detection, RFID initialization, ESP-NOW readiness, and eventually the dashboard access message. If IMU or magnetometer detection fails, enable [serial debug](#serial-sensor-debug-mode) before continuing to compass calibration.
 8. Repeat with the exact same sketch and settings for every board, checking the correct port each time.
 
 All boards must run the new version. Earlier firmware has a different radio packet format and will not join this version correctly. Uploading updates program memory; normal independent-power operation starts after you disconnect the laptop and supply suitable power to each board.
@@ -221,6 +251,55 @@ A replacement host has its own browser state and only the telemetry it receives 
 
 ## 12. Troubleshooting
 
+### Serial sensor debug mode
+
+Debug mode is enabled at runtime on the same `Code/brick/brick.ino`; do not add a second `.ino` to the `brick` folder because Arduino combines sketch files into one program.
+
+1. Regenerate assets if needed, compile, and upload the updated sketch to the brick being diagnosed.
+2. Connect that brick by a USB data cable and open Serial Monitor at **115200 baud**.
+3. Set the line ending to **Newline**, **Carriage return**, or **Both NL & CR**. Wait for startup to finish if opening the monitor resets the board.
+4. Send `--debug`. Every 500 ms, detailed sensor snapshots appear until disabled or rebooted. The initial response also probes the I2C bus.
+5. Send `--no-debug` (or `--debug-off`) to stop detailed output. Existing normal event and two-second status logs remain.
+6. Send `--debug-i2c` for a one-shot I2C report without enabling periodic debug.
+7. After checking wiring with power disconnected, power the board again. If an already-powered sensor was absent at initialization, `--debug-reinit` explicitly retries IMU/magnetometer setup; it does not change the configured I2C address. Recheck with `--debug`.
+
+These are serial commands, not arguments passed to Arduino IDE or Arduino CLI. A reboot returns to debug-off by default. For automatic output after startup, change `BRICK_DEBUG_DEFAULT` from 0 to 1 in the sketch and recompile/upload; this does not require a separate debug sketch. Firmware remains the same across boards.
+
+Output includes raw and converted accelerometer/gyro/magnetometer XYZ values, raw temperature, pitch/roll/heading, sample age, calibration/freshness state, IMU/magnetometer transfer status and byte count, all four raw and debounced IR signals, RFID reader version/last UID/recent-read state, and peer RSSI. Buzzer, motor and LEDs are actuators, not additional sensors. RFID debug does not reread cards and does not establish continuous presence.
+
+A reading is cached from the normal sensor loop. `sample_age_ms=-1` means no valid sample has been received; cached zero values in that case are not measurements. Large sample ages mean stale data. `boot_detected` reports initialization success, not a guarantee the device is still responding. `last_tx_status=-1` means no transfer attempted; nonzero is an I2C error. Magnetometer ST1/ST2 are register snapshots: inspect `ST1_tx_status` and `ST1_read_bytes` alongside ST1 because a failed register read returns 0xFF. A usable ST1 read has status 0 and one byte; the driver does not treat a failed status read as a ready magnetic sample.
+
+### IMU/magnetometer diagnostic checklist
+
+Diagnose one brick at a time:
+
+1. Connect USB, open Serial Monitor at 115200 baud, select Newline and wait for startup.
+2. Send `--debug-i2c` and save the complete probe/register report.
+3. Send `--debug` and capture at least three consecutive snapshots. Gently rotate the brick flat and observe whether raw values change and sample ages remain low.
+4. Use the table below to distinguish missing I2C devices, failed sample transfers and missing compass calibration.
+5. Disconnect power before changing wiring. Reconnect power and repeat the probes. Use `--debug-reinit` only for an explicit retry of sensor initialization; it does not change wiring or auto-select another address.
+6. Once the sensor produces fresh data, power only that brick and follow [compass calibration](#8-check-and-calibrate-each-brick). Calibration cannot make an absent I2C device respond.
+7. Send `--no-debug` when finished. Repeat for each board, identifying it by hardware UID rather than its temporary display number.
+
+For investigation, save the startup log, the one-shot I2C report, three debug snapshots, board/core/library versions, and the module's printed model marking. Compare reports across boards to identify common wiring or module differences.
+
+Interpret the probe and reading fields as follows:
+
+| Debug observation | Interpretation / next check |
+| --- | --- |
+| Neither 0x68 nor 0x69 responds | Check sensor power, GND, SDA=21, SCL=22, I2C mode/NCS and wiring; probe status alone cannot prove the exact fault |
+| 0x69 responds but 0x68 does not | Check AD0; current firmware expects AD0=GND/address 0x68. Reinit does not switch to 0x69 |
+| 0x68 responds | Inspect WHO_AM_I; an ACK alone does not identify the part or guarantee it has a magnetometer |
+| 0x68 responds but 0x0C does not | Inspect MPU identity, USER_CTRL, INT_PIN_CFG bypass and actual module type. The magnetometer is accessed through bypass; a generic gyro module may not include AK8963 |
+| MPU sample age is -1 or growing | Check transfer status and whether a full 14-byte read succeeds |
+| Magnetometer sample age is -1 or growing | Check ST1 read errors/data-ready state, 7-byte reads, ST2 overflow and mode register |
+| Sensor readings are fresh but heading_valid=0, calibrated=0 | Hardware may be reading correctly; perform compass calibration with that brick alone |
+| calibrated=1 but heading_valid=0 | Check freshness, calibration-in-progress state and magnetometer initialization |
+| RFID version is 0x00 or 0xFF | The normal firmware treats this as a reader warning; check power/SPI connections |
+
+I2C reports probe 0x68, 0x69 and 0x0C and read identity, power, bypass and magnetometer mode registers. They avoid draining the live magnetic sample registers. Status 0 means an acknowledged transaction; failed register reads are printed as unavailable rather than fabricated identity values. SDA/SCL digital pin levels are momentary snapshots, not a complete bus integrity test. Sensor absence is reported; the debug feature does not claim to repair it.
+
+
 | Symptom | What to check |
 | --- | --- |
 | Board/port absent | Use a known data cable and another USB port; identify the board's USB-UART chip and install its official driver if needed |
@@ -229,6 +308,8 @@ A replacement host has its own browser state and only the telemetry it receives 
 | Upload stuck at connecting | Confirm board and port; try BOOT/EN sequence; reduce upload speed to 115200 if available |
 | `MFRC522.h` missing | Install MFRC522 through Library Manager |
 | `DashboardPage.h` missing | Regenerate assets and keep the header beside `brick.ino` |
+| `DebugCommand.h` missing | Restore `Code/brick/DebugCommand.h` beside the sketch; the dashboard generator does not create it |
+| `--debug` produces no detailed output | Confirm the updated firmware is flashed, 115200 baud is selected, startup has completed, and a newline/CR is sent; type the exact command without quotes |
 | ESP-NOW receive-callback type error | Confirm Espressif ESP32 core 3.x; do not silently mix old callback APIs |
 | Other compile errors | Verify target is the intended classic ESP32, preserve the complete compiler error and installed core/library versions |
 | No hotspot after boot | Test one board alone; allow initialization/election time; inspect the serial log, power stability and ESP-NOW initialization |
@@ -312,21 +393,12 @@ For host checks, install Python 3, Node.js and a C++17-capable `g++` accessible 
 ```bash
 python3 Code/tests/test_dynamic_identity.py
 python3 Code/tests/test_gateway_election.py
+python3 Code/tests/test_sensor_debug.py
 node Code/tests/test_dashboard.js
 node --check Code/Dashboard/dashboard.js
 ```
 
-The Python checks compile extracted firmware functions using desktop queue/network adapters. The JavaScript check uses a mocked DOM. They check logic, not the ESP32 hardware build, real radio, power, sensors or visual browser layout. On Windows, use a Python launcher and a working C++ toolchain, or run host checks in a configured Linux/WSL environment; none of these tools is needed for ordinary tray operation.
-
-Older simulations are also available:
-
-```bash
-python3 Code/tests/test_brick_logic.py
-python3 Code/tests/test_topology.py
-python3 Code/tests/simulate_swarm.py
-```
-
-These historical models do not prove automatic face identity discovery or physical reconstruction on current hardware. The topology simulation assumes known connections.
+The Python checks compile extracted firmware functions using desktop queue/network adapters. `test_sensor_debug.py` additionally checks command parsing, enable/disable timing and diagnostic distinctions between absent, stale and uncalibrated sensor data. The JavaScript check uses a mocked DOM. They check logic, not the ESP32 hardware build, real radio, power, sensors or visual browser layout. On Windows, use a Python launcher and a working C++ toolchain, or run host checks in a configured Linux/WSL environment; none of these tools is needed for ordinary tray operation.
 
 ## 15. Shutdown, restart and known limitations
 

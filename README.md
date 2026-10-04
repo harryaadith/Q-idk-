@@ -1,83 +1,48 @@
-# Project Title
+# Smart Surgery Tray
 
-Start with the complete [HOW TO RUN guide](HOW_TO_RUN.md) for setup from the beginning.
+Team 22 — (Q)idk if i'm getting an internship — Electronic System Workshop (ESW).
 
-### Team Details
-- Team Number: 22
-- Team Name: (Q)idk if i'm getting an internship
-- Course/Module: <Enter course name>
+Independently powered ESP32 bricks form a modular tray prototype. Top-facing RFID readers scan instrument tags; side IR sensors detect occupied faces; an MPU9250/AK8963 supplies flat-table orientation. Bricks exchange telemetry over ESP-NOW and automatically elect one to host the Wi-Fi dashboard.
 
----
+Start with [HOW_TO_RUN.md](HOW_TO_RUN.md) for wiring, software installation, compilation, upload, calibration, wireless startup, serial debug and troubleshooting.
 
-# Repository Instructions
+## Current implementation
 
-This repository is intended to serve as the project starter for GitHub Classroom. All team members must follow the structure and documentation requirements below to ensure the project is easy to evaluate, reproduce, and review.
+Upload the same [brick.ino](Code/brick/brick.ino) to every board. Hardware identities and display numbers are automatic. Join `SmartSurgeryTray` with password `smarttray22`, then open `http://192.168.4.1`.
 
-## 1. Repository Structure
+The dashboard reports individual brick orientation, face occupancy and the last RFID scan. Actual physical arrangement reconstruction and continuous instrument-presence detection remain unresolved. Host checks pass; full ESP32 compilation and physical operation still require verification.
 
-Maintain the following folders in the root directory:
+For serial sensor diagnostics, open Serial Monitor at 115200 baud with a newline and send `--debug`. Details and other commands are in [the run guide](HOW_TO_RUN.md#serial-sensor-debug-mode).
 
-- `Code/` - Contains all project source code, scripts, notebooks, and related implementation files.
-- `Resources/` - Contains supporting material such as references, research papers, documents, datasets, and resource documentation.
-- `Demos/` - Contains demonstration videos, images, screenshots, or a README file with public links to the media.
-- `Presentation/` - Contains the final presentation in PDF format used for evaluation.
+## Repository layout
 
-## 2. Project Requirements
+| Location | Contents |
+| --- | --- |
+| [HOW_TO_RUN.md](HOW_TO_RUN.md) | Single setup, wiring, operation and troubleshooting guide |
+| [Code/brick/](Code/brick/) | Production sketch, debug command parser and generated dashboard header |
+| [Code/Dashboard/](Code/Dashboard/) | Dashboard HTML/JavaScript sources and embedding script |
+| [Code/tests/](Code/tests/) | Current identity, gateway, sensor-debug and dashboard host checks |
+| [Demos/](Demos/) | Demonstration materials |
+| [Resources/](Resources/) | Supporting references |
+| [Presentation/](Presentation/) | Presentation PDFs and editable slide source |
 
-1. The `Code` folder must contain all code developed for the project, including any supporting files required to run or reproduce the work.
-2. The `Demos` folder must include either:
-   - demo videos,
-   - images/screenshots, or
-   - a README file containing publicly accessible links to the demonstration material.
-3. The `Presentation` folder must include the final presentation in PDF format.
-4. All files should be organized in a clean and logical structure.
-5. Project documentation must be clear, concise, and professional.
+After dashboard edits, run `python3 Code/Dashboard/embed.py`, compile, and reflash every board. Keep both header files beside the sketch. Historical prototypes and obsolete documentation are available in Git history.
 
-## 3. Documentation Standards
+## Verification
 
-Each project should include documentation that helps a reviewer understand:
+From the repository root, with Python 3, Node.js and a C++17-capable `g++`:
 
-- the problem being addressed,
-- the approach taken,
-- the implementation details,
-- setup and execution steps,
-- assumptions and constraints,
-- results or outcomes,
-- references and external resources used.
+```bash
+python3 Code/tests/test_dynamic_identity.py
+python3 Code/tests/test_gateway_election.py
+python3 Code/tests/test_sensor_debug.py
+node Code/tests/test_dashboard.js
+```
 
-A clear guide for setup and execution should be provided in a file such as `setup.md` or equivalent documentation within the project.
+These checks use host adapters and do not replace an ESP32 build or hardware acceptance tests. See the run guide for those steps.
 
-## 4. Reproducibility
+## Submission and AI disclosure
 
-The project must be reproducible. This means that another user should be able to understand and run the project with the provided instructions.
+Keep project code in `Code/`, demonstration material in `Demos/`, references in `Resources/`, and presentation deliverables in `Presentation/`. Document dependencies, reproducible setup, results and external sources before submission.
 
-- Include setup steps.
-- Specify required tools, dependencies, and environment details.
-- Explain how to execute the application or code.
-- Document any assumptions made during implementation.
-
-## 5. AI Usage and Transparency
-
-Any use of AI tools must be clearly declared.
-
-- State where AI was used.
-- Include the prompt(s) used, where applicable.
-- Provide links to the relevant AI chat or conversation, if available.
-- Clearly mention the role of AI in the project workflow.
-
-This is required to ensure transparency and reproducibility.
-
-## 6. Submission Checklist
-
-Before submission, confirm that the repository contains:
-
-- clean and organized code,
-- complete project documentation,
-- setup or run instructions,
-- demo material and presentation,
-- properly referenced resources,
-- AI usage disclosure, if applicable.
-
----
-
-This starter repository is intended to help teams maintain consistency, professionalism, and evaluation readiness throughout the project lifecycle.
+Codex assisted with repository inspection, dynamic identity and wireless dashboard implementation, serial sensor diagnostics, cleanup and documentation. The requested scope was independently powered, identically flashed bricks with automatic numbering, rotation telemetry, an elected hotspot and opt-in sensor debugging. Current limitations and validation status are recorded in the run guide; no public chat link is available.

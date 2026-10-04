@@ -1,0 +1,7 @@
+# Local caches and build outputs
+__pycache__/
+*.py[cod]
+/build/
+Code/brick/build/
+.temp
+.DS_Store
