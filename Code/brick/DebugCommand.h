@@ -2,7 +2,17 @@
 #include <stddef.h>
 #include <string.h>
 
-enum class DebugCommand { None, Enable, Disable, Probe, Reinitialize, Unknown };
+enum class DebugCommand {
+  None,
+  Enable,
+  Disable,
+  Probe,
+  Reinitialize,
+  WhoAmI,
+  KillWhoAmI,
+  Help,
+  Unknown
+};
 
 // Bounded, nonblocking line parser: no dynamic allocation or partial commands.
 class DebugCommandParser {
@@ -20,6 +30,9 @@ public:
         else if (!strcmp(line, "--no-debug") || !strcmp(line, "--debug-off")) command = DebugCommand::Disable;
         else if (!strcmp(line, "--debug-i2c")) command = DebugCommand::Probe;
         else if (!strcmp(line, "--debug-reinit")) command = DebugCommand::Reinitialize;
+        else if (!strcmp(line, "--whoami")) command = DebugCommand::WhoAmI;
+        else if (!strcmp(line, "--kill-whoami")) command = DebugCommand::KillWhoAmI;
+        else if (!strcmp(line, "--help")) command = DebugCommand::Help;
       }
       length = 0; overflow = false;
       return command;

@@ -261,7 +261,10 @@ Debug mode is enabled at runtime on the same `Code/brick/brick.ino`; do not add 
 4. Send `--debug`. Every 500 ms, detailed sensor snapshots appear until disabled or rebooted. The initial response also probes the I2C bus.
 5. Send `--no-debug` (or `--debug-off`) to stop detailed output. Existing normal event and two-second status logs remain.
 6. Send `--debug-i2c` for a one-shot I2C report without enabling periodic debug.
-7. After checking wiring with power disconnected, power the board again. If an already-powered sensor was absent at initialization, `--debug-reinit` explicitly retries IMU/magnetometer setup; it does not change the configured I2C address. Recheck with `--debug`.
+7. Send `--whoami` to verify all sensor register identities (MPU9250 expected 0x71, AK8963 expected 0x48, RFID expected 0x92, 4x IR expected 1) and output booleans for each sensor. Runs every 1000 ms.
+8. Send `--kill-whoami` to stop the continuous WHO_AM_I verification stream.
+9. Send `--help` to print the full reference list of available serial debug commands.
+10. After checking wiring with power disconnected, power the board again. If an already-powered sensor was absent at initialization, `--debug-reinit` explicitly retries IMU/magnetometer setup; it does not change the configured I2C address. Recheck with `--debug` or `--whoami`.
 
 These are serial commands, not arguments passed to Arduino IDE or Arduino CLI. A reboot returns to debug-off by default. For automatic output after startup, change `BRICK_DEBUG_DEFAULT` from 0 to 1 in the sketch and recompile/upload; this does not require a separate debug sketch. Firmware remains the same across boards.
 

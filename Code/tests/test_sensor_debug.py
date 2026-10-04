@@ -33,6 +33,14 @@ struct Imu {
 } imu;
 uint32_t lastAccelSample=0,lastMagSample=0,rfidDetectedTime=0;
 bool debugEnabled=false;uint32_t lastSensorDebugPrint=0;int probeCount=0,reinitCount=0;
+bool whoamiEnabled=false;uint32_t lastWhoAmIPrint=0;
+#define MPU9250_I2C_ADDR 0x68
+#define AK8963_I2C_ADDR 0x0C
+uint8_t i2cReadByte(uint8_t dev, uint8_t reg) {
+  if (dev == 0x68 && reg == 0x75) return 0x71;
+  if (dev == 0x0C && reg == 0x00) return 0x48;
+  return 0xFF;
+}
 void printDebugBus(){probeCount++;}
 bool initMpu9250(){reinitCount++;return false;}
 int imuReadError=-1,imuReadBytes=0,magReadError=-1,magReadBytes=0,magStatusReadError=-1,magStatusReadBytes=0;
@@ -63,6 +71,9 @@ int main(){
  assert(line(parser,"--debug-off\n")==DebugCommand::Disable);
  assert(line(parser,"--debug-i2c\n")==DebugCommand::Probe);
  assert(line(parser,"--debug-reinit\n")==DebugCommand::Reinitialize);
+ assert(line(parser,"--whoami\n")==DebugCommand::WhoAmI);
+ assert(line(parser,"--kill-whoami\n")==DebugCommand::KillWhoAmI);
+ assert(line(parser,"--help\n")==DebugCommand::Help);
  assert(line(parser,"--debugging\n")==DebugCommand::Unknown);
  assert(line(parser,"--debugXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n")==DebugCommand::Unknown);
  assert(line(parser,"--debug\n")==DebugCommand::Enable); // recover after overflow
@@ -92,7 +103,19 @@ int main(){
  Serial.output.clear();now+=1000;serviceSerialDebug();assert(Serial.output.empty());
  Serial.input="--debug-i2c\n";serviceSerialDebug();assert(probeCount==2);assert(!debugEnabled);
  Serial.input="--debug-reinit\n";serviceSerialDebug();assert(reinitCount==1);assert(lastMagSample==0);
-
+ Serial.output.clear();
+ Serial.input="--whoami\n";serviceSerialDebug();assert(whoamiEnabled);
+ assert(Serial.output.find("[WHOAMI]")!=std::string::npos);
+ assert(Serial.output.find("MPU9250")!=std::string::npos);
+ assert(Serial.output.find("AK8963")!=std::string::npos);
+ assert(Serial.output.find("RFID MFRC522")!=std::string::npos);
+ assert(Serial.output.find("IR NORTH")!=std::string::npos);
+ Serial.output.clear();
+ Serial.input="--kill-whoami\n";serviceSerialDebug();assert(!whoamiEnabled);
+ assert(Serial.output.find("killed")!=std::string::npos);
+ Serial.output.clear();
+ Serial.input="--help\n";serviceSerialDebug();
+ assert(Serial.output.find("AVAILABLE SERIAL COMMANDS")!=std::string::npos);
 }
 """
 with tempfile.TemporaryDirectory() as directory:

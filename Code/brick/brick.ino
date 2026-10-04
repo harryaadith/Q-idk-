@@ -198,6 +198,8 @@ int lastI2cReadError=-1, lastI2cReadBytes=0, magStatusReadError=-1, magStatusRea
 #endif
 bool debugEnabled = BRICK_DEBUG_DEFAULT;
 uint32_t lastSensorDebugPrint = 0;
+bool whoamiEnabled = false;
+uint32_t lastWhoAmIPrint = 0;
 Preferences calibrationStore;
 bool compassCalibrated = false, compassCalibrating = false;
 uint32_t calibrationStarted = 0;
@@ -927,6 +929,85 @@ void printSensorDebug() {
   for(int i=1;i<=TOTAL_SWARM_BRICKS;i++) if(peers[i].active)
     Serial.printf("[DEBUG RADIO] peer_uid=%s RSSI_ema_dBm=%.2f close=%u age_ms=%lu\n",uidText(peers[i].uid).c_str(),peers[i].rssi_ema,peers[i].is_close,(unsigned long)(millis()-peers[i].last_seen_ms));
 }
+bool verifySensorWhoAmI(const char* name, int expected, int received, bool isHex = true) {
+  bool match = (expected == received);
+  if (isHex) {
+    Serial.printf("[WHOAMI] %-28s: Expected=0x%02X, Received=0x%02X -> Match: %s (Boolean: %d)\n",
+                  name, (uint8_t)expected, (uint8_t)received, match ? "TRUE" : "FALSE", match ? 1 : 0);
+  } else {
+    Serial.printf("[WHOAMI] %-28s: Expected=%d, Received=%d -> Match: %s (Boolean: %d)\n",
+                  name, expected, received, match ? "TRUE" : "FALSE", match ? 1 : 0);
+  }
+  return match;
+}
+
+bool printSensorWhoAmI() {
+  Serial.printf("\n==================== SENSOR WHO_AM_I VERIFICATION (UID: %s) ====================\n", uidText(nodeUid).c_str());
+  bool allMatch = true;
+
+  // 1. MPU9250 Accelerometer / Gyroscope (Expected: 0x71 for genuine MPU9250)
+  uint8_t mpuWho = i2cReadByte(MPU9250_I2C_ADDR, 0x75);
+  bool mpuMatch = verifySensorWhoAmI("MPU9250 (0x68 Reg 0x75)", 0x71, mpuWho, true);
+  if (!mpuMatch) {
+    allMatch = false;
+    if (mpuWho == 0x70) {
+      Serial.println("         --> NOTE: 0x70 indicates MPU-6500 silicon (missing or bootleg AK8963 magnetometer).");
+    } else if (mpuWho == 0xFF || mpuWho == 0x00) {
+      Serial.println("         --> NOTE: No response on I2C address 0x68. Verify SDA=21, SCL=22, NCS=3V3, AD0=GND.");
+    }
+  }
+
+  // 2. AK8963 Magnetometer (Expected: 0x48 on I2C bypass address 0x0C)
+  uint8_t magWho = i2cReadByte(AK8963_I2C_ADDR, 0x00);
+  bool magMatch = verifySensorWhoAmI("AK8963 Mag (0x0C Reg 0x00)", 0x48, magWho, true);
+  if (!magMatch) {
+    allMatch = false;
+    if (magWho == 0xFF || magWho == 0x00) {
+      Serial.println("         --> NOTE: Address 0x0C not responding. AK8963 die missing or I2C bypass disabled.");
+    }
+  }
+
+  // 3. RFID MFRC522 (Expected: 0x92 for v2.0 or 0x91 for v1.0)
+  uint8_t rfidVer = rfid.PCD_ReadRegister(rfid.VersionReg);
+  bool rfidMatch = verifySensorWhoAmI("RFID MFRC522 (Reg 0x37)", 0x92, rfidVer, true);
+  if (!rfidMatch) {
+    allMatch = false;
+    if (rfidVer == 0x00 || rfidVer == 0xFF) {
+      Serial.println("         --> NOTE: RFID reader not responding on SPI bus (check SS=5, SCK=18, MOSI=23, MISO=19, RST=4).");
+    }
+  }
+
+  // 4. 4x Directional IR Sensors (Expected: 1 / HIGH when unobstructed in open air)
+  for (int i = 0; i < 4; i++) {
+    int irVal = digitalRead(IR_PINS[i]);
+    char label[32];
+    snprintf(label, sizeof(label), "IR %s (GPIO %u)", FACE_NAMES[i], IR_PINS[i]);
+    bool irMatch = verifySensorWhoAmI(label, 1, irVal, false);
+    if (!irMatch) {
+      allMatch = false;
+      Serial.printf("         --> NOTE: Face %s reading LOW (0) -> Docked/obstacle detected or pin tied low.\n", FACE_NAMES[i]);
+    }
+  }
+
+  Serial.printf("---------------------------------------------------------------------------------\n");
+  Serial.printf("[WHOAMI] OVERALL STATUS: %s (Boolean: %d)\n", allMatch ? "ALL_MATCH" : "MISMATCH_DETECTED", allMatch ? 1 : 0);
+  Serial.println("=================================================================================\n");
+  return allMatch;
+}
+
+void printHelp() {
+  Serial.println("\n==================== AVAILABLE SERIAL COMMANDS ====================");
+  Serial.println("  --debug        : Enable continuous sensor telemetry stream (every 500ms)");
+  Serial.println("  --no-debug     : Disable continuous sensor telemetry stream");
+  Serial.println("  --debug-off    : Alias for --no-debug");
+  Serial.println("  --debug-i2c    : Probe I2C bus addresses (0x68, 0x69, 0x0C) and registers");
+  Serial.println("  --debug-reinit : Reinitialize MPU9250 / AK8963 IMU");
+  Serial.println("  --whoami       : Verify WHO_AM_I & registers for all sensors (MPU, RFID, 4x IR)");
+  Serial.println("  --kill-whoami  : Stop periodic WHO_AM_I verification");
+  Serial.println("  --help         : Display this command reference list");
+  Serial.println("===================================================================\n");
+}
+
 void applyDebugCommand(DebugCommand command) {
   if(command==DebugCommand::Enable) {
     debugEnabled=true; Serial.println("[DEBUG] enabled; detailed sensors every 500ms; --no-debug disables.");
@@ -941,8 +1022,18 @@ void applyDebugCommand(DebugCommand command) {
     lastAccelSample=0; lastMagSample=0; imuReadError=-1; magReadError=-1;
     imuReadBytes=0; magReadBytes=0; magStatus1=0; magStatus2=0; magStatusReadError=-1; magStatusReadBytes=0;
     initMpu9250(); printDebugBus();
+  } else if(command==DebugCommand::WhoAmI) {
+    whoamiEnabled=true;
+    printSensorWhoAmI();
+    lastWhoAmIPrint=millis();
+    Serial.println("[WHOAMI] enabled; checking every 1000ms; --kill-whoami stops.");
+  } else if(command==DebugCommand::KillWhoAmI) {
+    whoamiEnabled=false;
+    Serial.println("[WHOAMI] stopped/killed.");
+  } else if(command==DebugCommand::Help) {
+    printHelp();
   } else if(command==DebugCommand::Unknown) {
-    Serial.println("[DEBUG] commands: --debug, --no-debug, --debug-i2c, --debug-reinit (send newline)");
+    Serial.println("[DEBUG] commands: --debug, --no-debug, --debug-i2c, --debug-reinit, --whoami, --kill-whoami, --help (send newline)");
   }
 }
 void serviceSerialDebug() {
@@ -951,6 +1042,9 @@ void serviceSerialDebug() {
     applyDebugCommand(parser.feed((char)Serial.read()));
   if(debugEnabled && millis()-lastSensorDebugPrint>=500) {
     lastSensorDebugPrint=millis(); printSensorDebug();
+  }
+  if(whoamiEnabled && millis()-lastWhoAmIPrint>=1000) {
+    lastWhoAmIPrint=millis(); printSensorWhoAmI();
   }
 }
 
