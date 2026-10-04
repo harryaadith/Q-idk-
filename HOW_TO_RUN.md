@@ -2,7 +2,7 @@
 
 This is the complete entry point for setting up the current project from an unconfigured laptop and wired ESP32 boards through normal wireless operation. Use the same firmware on every brick. There is no per-brick source edit, laptop serial connection during normal operation, router, cloud service, or separate dashboard server.
 
-**Current validation status:** host checks have passed for dynamic identities, gateway election and dashboard rendering. A full ESP32 board build and hardware operation have not yet been verified. The first compilation and the hardware acceptance checks below are required before treating this setup as working.
+**Current validation status:** host checks have passed for dynamic identities, gateway election, relative gyro yaw, layout constraints and dashboard rendering. A full ESP32 board build and hardware operation have not yet been verified. The first compilation and the hardware acceptance checks below are required before treating this setup as working.
 
 ## Contents
 
@@ -30,7 +30,9 @@ The intended application is a modular surgery-tray prototype: independently powe
 
 Each brick broadcasts telemetry over ESP-NOW on Wi-Fi channel 1. After discovery settles, the brick with the lowest live hardware identity hosts a Wi-Fi access point and serves the dashboard. Your laptop connects to that host, which reports its own data and the other bricks it can directly hear. The browser polls telemetry every 500 ms.
 
-The current dashboard shows brick identities, automatic display numbers, occupied faces, calibrated magnetic heading, and the last scanned RFID UID. **It does not reconstruct the actual physical tray arrangement.** IR sensors detect objects but cannot identify the adjacent brick. Heading can constrain possible connections without resolving every pairing. The individual diagram positions on screen are not physical coordinates.
+The dashboard shows an inferred 2D tray configuration using relative gyro yaw and occupied faces, alongside live brick/RFID cards. No magnetometer is required. **Inference assumes all marked N faces share a starting direction, bricks remain flat, orientations are multiples of 90 degrees, all online bricks form one connected square-grid tray, and occupied IR faces touch only other bricks.** A unique fit is conditional on these assumptions, not independently measured peer identity. When several fits exist, select an alternative and optionally confirm it after checking the physical tray.
+
+The gyroscope tracks changes in yaw from startup alignment. It has no absolute magnetic reference and drifts; physically realign all N marks and restart alignment whenever drift is noticeable. If samples are lost, the board tilts, or the gyro saturates, tracking becomes invalid instead of guessing missed turns.
 
 ## 2. Parts and software
 
@@ -40,7 +42,7 @@ Per brick:
 
 - One MFRC522/RC522 RFID reader and suitable RFID instrument tags.
 - Four 3.3 V compatible, active-low digital IR obstacle sensors.
-- One MPU9250 breakout including its AK8963 magnetometer. A different MPU device does not provide equivalent magnetometer support.
+- One MPU6500 or MPU9250 accelerometer/gyro module, using I2C address 0x68. A magnetometer is optional and is not used for layout yaw.
 - One common-cathode RGB LED and three 220–330 ohm resistors.
 - Buzzer module with a 3.3 V compatible signal input, or an appropriate driver for the buzzer used.
 - ERM vibration motor with a transistor/MOSFET driver and flyback diode, if haptics are installed.
@@ -71,12 +73,15 @@ Use these files:
 | File | Purpose |
 | --- | --- |
 | `Code/brick/brick.ino` | The single firmware sketch to upload to every board |
+| `Code/brick/PlanarYaw.h` | Aligned-start gyro bias and relative yaw tracker; keep beside sketch |
 | `Code/brick/DebugCommand.h` | Serial debug command parser; keep beside the sketch |
 | `Code/brick/DashboardPage.h` | Generated web assets; must stay beside the sketch |
 | `Code/Dashboard/dashboard.html` | Editable dashboard page and styles |
 | `Code/Dashboard/dashboard.js` | Editable dashboard behavior |
+| `Code/Dashboard/layout.js` | Connected-grid layout solver and rotation constraints |
 | `Code/Dashboard/embed.py` | Generates the firmware's web-assets header |
-| `Code/tests/` | Host checks and historical simulations |
+| `Code/tests/` | Current host logic checks |
+| `Code/diagnostics/imu_whoami/imu_whoami.ino` | Standalone IMU identity checker |
 
 Only `Code/brick/brick.ino` is a production upload target. Obsolete numbered sketches, prototypes and old protocol simulations have been removed from this checkout; earlier versions remain in Git history.
 
@@ -155,16 +160,17 @@ python3 Code/Dashboard/embed.py
 On Windows, use `py -3 Code/Dashboard/embed.py` or your installed Python launcher. The script updates only `Code/brick/DashboardPage.h`; it creates no numbered sketches.
 
 1. In Arduino IDE choose **File → Open** and select `Code/brick/brick.ino`.
-2. Confirm these three files remain together:
+2. Confirm these four files remain together:
 
    ```text
    Code/brick/
    ├── brick.ino
    ├── DashboardPage.h
-   └── DebugCommand.h
+   ├── DebugCommand.h
+   └── PlanarYaw.h
    ```
 
-   Do not move the `.ino` alone into a different directory. `embed.py` generates `DashboardPage.h`; `DebugCommand.h` is a maintained source file and must also be present.
+   Do not move the `.ino` alone into a different directory. `embed.py` generates `DashboardPage.h`; `DebugCommand.h` and `PlanarYaw.h` are maintained source files and must also be present.
 3. Confirm the ESP32 board profile and installed core version.
 4. Click **Verify** (checkmark). Do this before connecting and uploading to every board.
 5. Continue only after compilation succeeds. If it fails, retain the compiler output and use the troubleshooting table below. A successful host test is not a substitute for this build.
@@ -179,41 +185,40 @@ Do not change `BRICK_ID`: it is now a runtime display number. The source must re
 4. Click **Upload** and wait for a successful completion message.
 5. If upload stalls while connecting, use your board's BOOT/EN procedure; commonly hold BOOT during the connection attempt and release once writing begins.
 6. Open Serial Monitor at **115200 baud**, press EN/reset, and inspect the startup log.
-7. Check for IMU/magnetometer detection, RFID initialization, ESP-NOW readiness, and eventually the dashboard access message. If IMU or magnetometer detection fails, enable [serial debug](#serial-sensor-debug-mode) before continuing to compass calibration.
+7. Check for accelerometer/gyro detection, RFID initialization, ESP-NOW readiness, and the dashboard access message. A missing magnetometer is acceptable. If accel/gyro detection fails, enable [serial debug](#serial-sensor-debug-mode) before attempting alignment.
 8. Repeat with the exact same sketch and settings for every board, checking the correct port each time.
 
 All boards must run the new version. Earlier firmware has a different radio packet format and will not join this version correctly. Uploading updates program memory; normal independent-power operation starts after you disconnect the laptop and supply suitable power to each board.
 
 ## 8. Check and calibrate each brick
 
-Perform this procedure with **only one brick powered at a time**, so that brick becomes the dashboard host.
+Test a brick alone first. After power-on, keep it flat and still for at least three continuous seconds. The automatic gyro calibration estimates stationary Z-axis bias, assigns current yaw zero and marks orientation ready. Calibration restarts its stationary window if movement/noise occurs. It is intentionally not saved across reboots because the reference is the current physical start direction.
 
-1. Power the brick and wait for initialization plus the four-second election settling period. Allow roughly 10 seconds before troubleshooting a missing hotspot.
-2. On your laptop join Wi-Fi **SmartSurgeryTray** using password **smarttray22**. If the operating system reports “No Internet”, choose to stay connected.
-3. Open **http://192.168.4.1** explicitly using HTTP. The page is served by the brick. Opening the HTML file directly from disk does not connect it to the tray API.
-4. Check for one live card marked **gateway** and note its hardware UID. When running alone, every brick may display “Brick 1”; that does not mean their hardware identities collide.
-5. Test one IR face at a time by moving an object into and out of its range. Check that the matching orange edge appears and clears. Adjust the sensor's sensitivity for the intended docking distance. Reflections, ambient light, enclosure surfaces and nearby objects affect detection.
-6. Present a compatible RFID instrument tag to the top reader. Check that **Last instrument UID** changes and **Just scanned** appears briefly. The green indicator is held for about two seconds. Removing a tag does not clear the stored last UID.
-7. On the dashboard click **Calibrate gateway compass**.
-8. Keep the brick flat, rotate it smoothly through a full 360-degree circle, and continue rotating for the full **20 seconds**. Keep motors and nearby magnetic objects still or away during calibration.
-9. A usable heading should appear after successful calibration. If it remains unknown, repeat with a complete rotation and inspect magnetometer detection. Both measured axes must span sufficient range; the code requires a half-range greater than 10 microtesla on each axis.
-10. Rotate the brick approximately 90 degrees and check that the displayed heading changes sensibly. Compare the marked local N side with the diagram; verify sensor-axis mounting and sign conventions physically. Calibration does not automatically determine an enclosure mounting offset.
-11. Power-cycle the brick and check that its calibration persists. Ordinary uploads normally preserve Preferences/NVS; erasing flash removes calibration and requires repeating it.
-12. Power this brick off and repeat for the next one.
+1. Power one brick, with its marked N face pointing in your chosen reference direction. Test within direct Wi-Fi range of your laptop.
+2. Join `SmartSurgeryTray` (password `smarttray22`) after initialization and election settle; allow about 10 seconds.
+3. Open `http://192.168.4.1`. Verify one gateway card and its stable hardware UID.
+4. The card should show ready/tracking and roughly 0 degrees after remaining still. A missing magnetometer does not prevent this. Unknown yaw requires checking the actual accel/gyro readings and stationary conditions.
+5. Place an object in front of each side IR sensor in turn; verify the corresponding local face turns orange and clears when removed. False IR signals will make physical-layout inference unreliable.
+6. Scan a top-facing instrument tag; verify its UID and recent-read indicator. Removing the tag does not clear its last-read UID.
+7. Rotate the brick clockwise through approximately 90 degrees while keeping it flat; verify yaw increases toward 90 degrees. A slow full turn is preferable to a rapid turn; sampling is currently 10 Hz. If the sign is wrong or the board loses tracking, inspect mounting and acceleration/gyro samples.
+8. Return the marked N face to the reference direction. Click **Realign all bricks / zero gyro yaw** and keep still for at least five seconds. Alone, this resets only the visible board; in a group the reset is broadcast to directly heard peers.
+9. Repeat this sensor check for each board. When starting the full tray, physically align all marked N faces again; individual zero references must correspond to the same direction.
 
-The button calibrates only the current gateway. Powering boards individually ensures all four receive their own calibration. This is basic flat-table offset/scale calibration, not full 3D fusion or immunity to magnetic interference.
+Flat means the IMU Z axis is approximately normal to the table. The tracker uses the measured gravity sign to handle an upward or downward Z mounting. It requires |ax| and |ay| below 0.15 g and |az| between 0.85 and 1.15 g. Mounting the sensor on its side is not supported. Calibration requires gyro XYZ rates below 3 degrees/s and a sufficiently stable Z bias for three seconds. These software checks do not prove the operator actually aligned all N marks; constant slow motion during bias calibration can produce a wrong reference, so keep still.
 
 ## 9. Start the complete tray
 
-1. Place all calibrated bricks flat on the table within direct radio range of one another.
-2. Power them independently using their own supplies.
-3. Wait about 10 seconds for boot, discovery and election to settle.
-4. Join **SmartSurgeryTray**, password **smarttray22**.
-5. Open **http://192.168.4.1** and confirm the live count matches the number powered, normally four.
-6. There should be one gateway in a stable mutually visible group. Record hardware UIDs if you need to identify enclosures permanently.
-7. Move or rotate bricks and place RFID-tagged instruments on top to observe telemetry.
+1. Place all intended bricks flat, with **every marked N face pointing the same way**. No magnetic compass direction is required. You may begin with the bricks separated to make alignment easy.
+2. Power all boards and leave them still. If any board boots while rotated differently or its reference is uncertain, manually align all N marks and use the group realignment button after connecting.
+3. Wait about 10 seconds for initialization, three-second stationary calibration, discovery and gateway election.
+4. Join `SmartSurgeryTray`, password `smarttray22`, and open `http://192.168.4.1`.
+5. Verify the count matches the number powered and **every card reports ready relative yaw**. The realignment command is repeated over radio for one second but is not an acknowledged consensus protocol; if a peer missed it, realign again or reboot the aligned group.
+6. Keeping all bricks flat, assemble one connected tray on a square grid. Rotations should end at 0, 90, 180 or 270 degrees relative to the common start direction. The solver accepts yaw within 15 degrees of those positions; this tolerance does not eliminate drift.
+7. The **2D tray configuration** section displays a unique matching layout or offers possible layouts. The map's up direction is the initial shared N direction, not magnetic north. The lowest UID is used as a coordinate anchor; positions are relative rather than absolute table coordinates.
+8. If several layouts fit, use **Possible layout** to preview candidates. Compare their UID/brick labels with the physical tray, then optionally click **Confirm this candidate**. Confirmation is stored only in the current browser session and is cleared by geometry/membership changes, invalid readings, disconnection or realignment.
+9. If no connected layout fits, check whether an IR sensor sees a non-brick object, a brick is missing, a side is miswired, the group is disconnected or yaw has drifted. Do not confirm a guessed arrangement when inputs are inconsistent.
 
-No USB connection is required during this process. The laptop communicates with the elected host; the other boards send ESP-NOW telemetry to the group. No `npm install`, local Python server, cloud account or Internet connection is needed. The header embeds the page and JavaScript into the flashed firmware.
+No USB, router, Internet, local server or cloud account is needed during normal operation. All boards must run this revised TRA2 packet format; reflash every board, since old orientation packets are incompatible. Rebooted/newly joined boards must be physically aligned before reference calibration. If this cannot be done independently without disturbing the assembled tray, realign the entire group.
 
 ## 10. Understand the dashboard
 
@@ -223,12 +228,15 @@ No USB connection is required during this process. The laptop communicates with 
 | Hardware UID | Stable identity derived from this ESP32's hardware MAC |
 | Gateway | Board currently serving this browser |
 | Orange edge / occupied face | Local IR sensor detects an object; not an identified connection |
-| Heading | Fresh calibrated magnetic angle; sensor mounting must match the diagram convention |
-| Unknown / calibrate | Calibration unavailable/in progress, magnetometer unavailable, or stale sample |
+| Relative yaw | Clockwise angle from physically aligned startup, measured by gyro integration; can drift |
+| Orientation | Calibrating, ready, tracking lost, or IMU unavailable |
+| 2D tray configuration | Inferred relative grid positions matching current IR and snapped gyro rotations |
+| Possible layout | Alternative identity arrangements when the sensor data is ambiguous |
+| Unknown / realign | Gyro reference unavailable/calibrating, stale samples or tracking loss |
 | Last instrument UID | Most recently read top-facing RFID tag |
 | Just scanned | Recent scan indication, not a continuous instrument-presence measurement |
 | Faded card | Offline/stale peer or lost connection |
-| Physical arrangement unresolved | No verified face-to-peer connections or reconstructed physical coordinates |
+| No matching layout | Readings violate the connected-grid assumptions; inspect missing peers, IR and alignment |
 
 The UI retains offline cards as faded records. Display numbers are not permanent instrument IDs. The firmware does not map UIDs to instrument names, count tray completeness, or verify instrument removal. The on-board/RGB proximity consensus indicates radio proximity to active peers; it is not proof that a complete tray is assembled.
 
@@ -238,14 +246,14 @@ After all boards are flashed, verify:
 
 1. **Independent boot:** each board alone starts its hotspot and renders one live card.
 2. **Unique hardware identities:** all four cards have different UIDs. Numbers alone do not establish uniqueness.
-3. **Group discovery:** all four appear in one stable, mutually visible group; all headings appear after calibration.
+3. **Group discovery:** all four appear in one stable, mutually visible group; all relative yaws appear after aligned stationary calibration.
 4. **Face signals:** each board's four face indicators respond to the correct local side and clear after objects are removed.
 5. **RFID:** each board reports its own last instrument tag correctly; understand that removal is not continuously detected.
-6. **Rotation:** rotate one brick flat; its heading changes while its IR labels remain attached to its local faces.
+6. **Rotation and layout:** rotate one brick flat to a 90-degree position; its relative yaw changes and local IR labels rotate with it. Check an assembled 2x2 grid; test a strip with identical middle-face masks to verify ambiguity handling.
 7. **Peer loss:** power off a non-gateway brick. After approximately 2.5 seconds plus browser refresh time, the online count falls and its old card fades.
 8. **Rejoin:** power it back on. Its UID is unchanged; display numbers may be reassigned. A lower-UID arrival can also change the gateway.
 9. **Gateway loss:** power off the gateway. Expect the browser to disconnect. Another board should host after peer timeout plus roughly four seconds of settling; allow additional boot/radio time. Reconnect Wi-Fi and reload the page manually if needed.
-10. **Cold restart:** power everything off and back on; confirm discovery and saved compass calibration return.
+10. **Cold restart:** power everything off and back on; confirm discovery and fresh stationary gyro calibration completes; old yaw is not restored.
 
 A replacement host has its own browser state and only the telemetry it receives directly. Offline cards from the previous host are not a persistent event history. Do not infer that failover is broken solely because the laptop has not rejoined the new access point.
 
@@ -261,16 +269,32 @@ Debug mode is enabled at runtime on the same `Code/brick/brick.ino`; do not add 
 4. Send `--debug`. Every 500 ms, detailed sensor snapshots appear until disabled or rebooted. The initial response also probes the I2C bus.
 5. Send `--no-debug` (or `--debug-off`) to stop detailed output. Existing normal event and two-second status logs remain.
 6. Send `--debug-i2c` for a one-shot I2C report without enabling periodic debug.
-7. Send `--whoami` to verify all sensor register identities (MPU9250 expected 0x71, AK8963 expected 0x48, RFID expected 0x92, 4x IR expected 1) and output booleans for each sensor. Runs every 1000 ms.
+7. Send `--whoami` to verify sensor register identities (MPU6500=0x70 or MPU9250=0x71 accepted; optional AK8963=0x48; RFID=0x92; unobstructed IR=1) and output booleans for each sensor. Runs every 1000 ms.
 8. Send `--kill-whoami` to stop the continuous WHO_AM_I verification stream.
 9. Send `--help` to print the full reference list of available serial debug commands.
 10. After checking wiring with power disconnected, power the board again. If an already-powered sensor was absent at initialization, `--debug-reinit` explicitly retries IMU/magnetometer setup; it does not change the configured I2C address. Recheck with `--debug` or `--whoami`.
 
 These are serial commands, not arguments passed to Arduino IDE or Arduino CLI. A reboot returns to debug-off by default. For automatic output after startup, change `BRICK_DEBUG_DEFAULT` from 0 to 1 in the sketch and recompile/upload; this does not require a separate debug sketch. Firmware remains the same across boards.
 
-Output includes raw and converted accelerometer/gyro/magnetometer XYZ values, raw temperature, pitch/roll/heading, sample age, calibration/freshness state, IMU/magnetometer transfer status and byte count, all four raw and debounced IR signals, RFID reader version/last UID/recent-read state, and peer RSSI. Buzzer, motor and LEDs are actuators, not additional sensors. RFID debug does not reread cards and does not establish continuous presence.
+Output includes raw and converted accelerometer/gyro/magnetometer XYZ values, raw temperature, pitch/roll/heading, sample age, gyro state/bias/alignment age, calibration/freshness state, IMU/magnetometer transfer status and byte count, all four raw and debounced IR signals, RFID reader version/last UID/recent-read state, and peer RSSI. Buzzer, motor and LEDs are actuators, not additional sensors. RFID debug does not reread cards and does not establish continuous presence.
 
 A reading is cached from the normal sensor loop. `sample_age_ms=-1` means no valid sample has been received; cached zero values in that case are not measurements. Large sample ages mean stale data. `boot_detected` reports initialization success, not a guarantee the device is still responding. `last_tx_status=-1` means no transfer attempted; nonzero is an I2C error. Magnetometer ST1/ST2 are register snapshots: inspect `ST1_tx_status` and `ST1_read_bytes` alongside ST1 because a failed register read returns 0xFF. A usable ST1 read has status 0 and one byte; the driver does not treat a failed status read as a ready magnetic sample.
+
+### Standalone IMU WHO_AM_I checker
+
+Use this when you want to isolate IMU detection from the tray application:
+
+1. Open `Code/diagnostics/imu_whoami/imu_whoami.ino` in Arduino IDE. Keep it in its own folder; do not put it inside the production `brick` sketch folder.
+2. Select the same classic ESP32 board and actual USB port. The checker needs only the ESP32 core's `Wire` library, not MFRC522, Wi-Fi or an external IMU library.
+3. Wire IMU SDA=GPIO21, SCL=GPIO22, VCC=3V3 and common GND. For the MPU9250 breakout, NCS=3V3; AD0=GND normally selects 0x68. Test one IMU module at a time.
+4. Compile and upload. This temporarily replaces the tray firmware on that board.
+5. Open Serial Monitor at 115200 baud and press reset. The program scans I2C addresses, reads register 0x75 at both 0x68 and 0x69, then repeats identity checks every five seconds. Send `s` to repeat the full scan.
+6. A value of 0x71 matches MPU-9250; 0x70 matches MPU-6500. The I2C address and WHO_AM_I value are different concepts. An ACK alone is not identity verification.
+7. For a matching MPU-9250, the checker temporarily wakes the chip and enables I2C bypass, then reads magnetometer WIA at address 0x0C/register 0x00. It expects 0x48 and restores the original IMU power/bypass registers. Failed or short reads are reported explicitly, not treated as identity values. Unknown-device registers are not modified.
+8. Save the complete output. No reply suggests a bus/power/address issue; an unexpected identity suggests checking the actual module's register map. A missing magnetometer does not by itself prove a counterfeit device. The checker does not calibrate or test measurement accuracy.
+9. When finished, reopen `Code/brick/brick.ino` and upload it to restore tray operation. If register restoration failed, power-cycle first.
+
+Identity values are based on [TDK's MPU-9250 register map](https://invensense.tdk.com/wp-content/uploads/2017/11/RM-MPU-9250A-00-v1.6.pdf) and [MPU-6500 register map](https://invensense.tdk.com/wp-content/uploads/2015/02/MPU-6500-Register-Map2.pdf).
 
 ### IMU/magnetometer diagnostic checklist
 
@@ -279,9 +303,9 @@ Diagnose one brick at a time:
 1. Connect USB, open Serial Monitor at 115200 baud, select Newline and wait for startup.
 2. Send `--debug-i2c` and save the complete probe/register report.
 3. Send `--debug` and capture at least three consecutive snapshots. Gently rotate the brick flat and observe whether raw values change and sample ages remain low.
-4. Use the table below to distinguish missing I2C devices, failed sample transfers and missing compass calibration.
+4. Use the table below to distinguish missing I2C devices, failed sample transfers and incomplete gyro bias/reference calibration.
 5. Disconnect power before changing wiring. Reconnect power and repeat the probes. Use `--debug-reinit` only for an explicit retry of sensor initialization; it does not change wiring or auto-select another address.
-6. Once the sensor produces fresh data, power only that brick and follow [compass calibration](#8-check-and-calibrate-each-brick). Calibration cannot make an absent I2C device respond.
+6. Once accel/gyro readings are fresh, follow [aligned stationary calibration](#8-check-and-calibrate-each-brick). The magnetometer may remain absent. Calibration cannot make an absent IMU respond.
 7. Send `--no-debug` when finished. Repeat for each board, identifying it by hardware UID rather than its temporary display number.
 
 For investigation, save the startup log, the one-shot I2C report, three debug snapshots, board/core/library versions, and the module's printed model marking. Compare reports across boards to identify common wiring or module differences.
@@ -296,8 +320,8 @@ Interpret the probe and reading fields as follows:
 | 0x68 responds but 0x0C does not | Inspect MPU identity, USER_CTRL, INT_PIN_CFG bypass and actual module type. The magnetometer is accessed through bypass; a generic gyro module may not include AK8963 |
 | MPU sample age is -1 or growing | Check transfer status and whether a full 14-byte read succeeds |
 | Magnetometer sample age is -1 or growing | Check ST1 read errors/data-ready state, 7-byte reads, ST2 overflow and mode register |
-| Sensor readings are fresh but heading_valid=0, calibrated=0 | Hardware may be reading correctly; perform compass calibration with that brick alone |
-| calibrated=1 but heading_valid=0 | Check freshness, calibration-in-progress state and magnetometer initialization |
+| Accel/gyro readings are fresh but heading_valid=0 | Inspect yaw_state: 1 means stillness calibration, 3 means tracking lost; physically align and restart the reference |
+| yaw_state=2 but heading_valid=0 | Last gyro sample is stale; inspect I2C transfers and realign if tracking is lost |
 | RFID version is 0x00 or 0xFF | The normal firmware treats this as a reader warning; check power/SPI connections |
 
 I2C reports probe 0x68, 0x69 and 0x0C and read identity, power, bypass and magnetometer mode registers. They avoid draining the live magnetic sample registers. Status 0 means an acknowledged transaction; failed register reads are printed as unavailable rather than fabricated identity values. SDA/SCL digital pin levels are momentary snapshots, not a complete bus integrity test. Sensor absence is reported; the debug feature does not claim to repair it.
@@ -322,15 +346,15 @@ I2C reports probe 0x68, 0x69 and 0x0C and read identity, power, bypass and magne
 | Cards missing | Reflash all boards, check shared channel 1 and direct radio visibility; old packets are incompatible |
 | Dashboard reports disconnected | Check whether the host lost power or a lower-UID board caused a gateway change; rejoin hotspot and reload |
 | Number changed | Expected: display numbering depends on the active group; identify boards using hardware UIDs |
-| Heading unknown | Calibrate that board while it is alone; inspect MPU9250 and AK8963 wiring/detection, freshness and rotation range |
-| Heading distorted or consistently offset | Check sensor mounting/axis convention, complete calibration, nearby magnets/metals/motor currents; no mounting-offset control exists in the current UI |
+| Relative yaw unknown | Check supported MPU6500/MPU9250 detection, fresh accel/gyro samples and stationary aligned calibration; a magnetometer is not needed |
+| Yaw drifted / map becomes inconsistent | Align all physical N marks, click group realignment, keep flat and still five seconds; gyro yaw has no absolute reference |
 | IMU missing at 0x68 | Check SDA=21, SCL=22, AD0=GND, NCS=3V3, power and common ground |
-| MPU detected but magnetometer missing | Verify the module actually contains AK8963; inspect its I2C/bypass operation |
+| MPU detected but magnetometer missing | Acceptable for relative gyro yaw; only investigate AK8963 if you separately need magnetic readings |
 | RFID reader reports warning | Check 3.3 V power, SPI wiring, SS=5, RST=4 and antenna/tag compatibility |
 | IR edge stuck on/off | Check active-low polarity, sensor supply/output level, sensitivity and enclosure obstruction; verify local face wiring |
 | Reset when radio/motor activates | Check supply, wiring resistance, decoupling and motor driver; the present sketch disables the brownout detector, which does not fix inadequate power |
 | Instruments disappear but UID remains | Expected: the field stores the last scan; removal tracking is not implemented |
-| Diagram order differs from physical tray | Expected: actual topology reconstruction is unresolved with these obstacle sensors |
+| Map differs from physical tray | Check assumptions, startup alignment, drift and possible layouts; IR does not measure peer identity |
 
 For Linux port permissions, first inspect the actual port owner/group, for example:
 
@@ -353,7 +377,7 @@ For API diagnostics, while connected to the tray visit **http://192.168.4.1/api/
 curl --max-time 5 http://192.168.4.1/api/state
 ```
 
-Expect a JSON object with `topology: "unresolved"` and a `bricks` list containing UID, number, age, gateway status, face mask, heading or null, instrument UID and recent-scan state. Face-mask bits are N=1, E=2, S=4, W=8; combinations add together. A POST to `/api/calibrate` starts calibration of the hosting brick only; using the dashboard button is simpler.
+Expect a JSON object with `topology: "infer-grid"` and a `bricks` list containing UID, number, age, gateway status, face mask, relative yaw in `heading` or null, orientationState (0=unavailable, 1=calibrating, 2=ready, 3=lost), orientationSource=`gyro-relative`, alignmentAgeMs, instrument UID and recent-scan state. Face-mask bits are N=1, E=2, S=4, W=8; combinations add together. A POST to `/api/align` restarts the hosting gyro reference and broadcasts alignment resets for one second; align all bricks physically before using it. The dashboard button calls this route.
 
 ## 13. Edit and update the project
 
@@ -366,7 +390,7 @@ Expect a JSON object with `topology: "unresolved"` and a `bricks` list containin
    ```
 
 4. Compile in Arduino IDE, run relevant host checks if available, then upload the updated firmware to **every** brick.
-5. Reopen the browser page after updates. Recalibrate if flash/NVS was erased, sensor mounting changed, or magnetic conditions changed significantly.
+5. Reopen the browser page after updates. Restart aligned stationary calibration whenever the physical reference is changed or yaw drift/tracking loss is observed.
 
 The running dashboard is stored in flash. Editing files on the laptop does not update an already-flashed board. Changing hotspot credentials or channel means updating the shared firmware constants and reflashing all boards. Defaults are `TRAY_SSID`, `TRAY_PASSWORD` and `WIFI_CHANNEL` in the sketch. Keep the same source and radio packet layout on all peers. Work on `main` for this setup; `Bricks_Changes` is not involved.
 
@@ -397,6 +421,8 @@ For host checks, install Python 3, Node.js and a C++17-capable `g++` accessible 
 python3 Code/tests/test_dynamic_identity.py
 python3 Code/tests/test_gateway_election.py
 python3 Code/tests/test_sensor_debug.py
+python3 Code/tests/test_planar_yaw.py
+node Code/tests/test_layout.js
 node Code/tests/test_dashboard.js
 node --check Code/Dashboard/dashboard.js
 ```
@@ -405,12 +431,12 @@ The Python checks compile extracted firmware functions using desktop queue/netwo
 
 ## 15. Shutdown, restart and known limitations
 
-Close the browser and turn off each board's supply. Saved calibration persists; last-read UID and peer membership are runtime state and reset on reboot. Restart by powering the boards, waiting for discovery/election, joining the hotspot, and opening the dashboard again. A browser view is not a saved inventory.
+Close the browser and turn off each board's supply. Gyro reference/bias, last-read UID and peer membership are runtime state and reset on reboot; aligned stationary calibration is required at each start. Restart by powering the boards, waiting for discovery/election, joining the hotspot, and opening the dashboard again. A browser view is not a saved inventory.
 
 Current limits:
 
-- Automatic physical tray coordinates are not available; identifiable face communication or another positioning mechanism is needed for reliable reconstruction.
-- The design assumes flat-table operation and consistently aligned sensor axes.
+- The map is inferred under aligned-start, 90-degree, connected-grid and correct-IR assumptions; some physical arrangements are ambiguous and are presented as alternatives. Direct face identities and absolute table coordinates are not measured.
+- The design assumes flat-table motion with sensor Z approximately normal to the table. Gyro yaw drifts and needs a common starting orientation, periodic realignment and fresh samples; no magnetometer correction is used.
 - ESP-NOW is used for direct single-hop broadcasts; there is no multi-hop routing or robust distributed consensus under partitions.
 - Gateway changes can interrupt laptop connectivity and require manual Wi-Fi reconnection.
 - Display numbers may change; hardware UID is the stable identity.

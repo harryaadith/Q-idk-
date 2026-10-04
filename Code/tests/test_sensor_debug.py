@@ -13,6 +13,8 @@ prefix = r"""
 #include <cstdio>
 #include <string>
 #include "DebugCommand.h"
+#include "PlanarYaw.h"
+PlanarYaw gyroYaw;
 uint32_t now=2000;
 uint32_t millis(){return now;}
 struct SerialMock {
@@ -47,7 +49,7 @@ int imuReadError=-1,imuReadBytes=0,magReadError=-1,magReadBytes=0,magStatusReadE
 int16_t rawAccel[3]={},rawGyro[3]={},rawMag[3]={},rawTemperature=0;
 uint8_t magStatus1=0,magStatus2=0;
 bool compassCalibrated=false,compassCalibrating=false,rfidActive=false;
-bool headingIsValid(){return compassCalibrated && lastMagSample && now-lastMagSample<1000;}
+bool headingIsValid(){return imu.mpu_detected && gyroYaw.valid(now);}
 const char* FACE_NAMES[]={"NORTH","EAST","SOUTH","WEST"};
 const uint8_t IR_PINS[]={34,35,32,33};
 bool irFaceDetected[4]={}; uint8_t irDebounceCounters[4]={};
@@ -91,7 +93,8 @@ int main(){
  assert(Serial.output.find("raw_xyz=0,0,16384")!=std::string::npos);
  assert(Serial.output.find("last_instrument_uid=ABC123 scan_age_ms=200")!=std::string::npos);
  assert(Serial.output.find("heading_valid=0 calibrated=0")!=std::string::npos); // sensor present, uncalibrated
- compassCalibrated=true;Serial.output.clear();printSensorDebug();
+ for(uint32_t t=100;t<=3100;t+=100) gyroYaw.sample(t,0,0,1,0,0,0);
+ now=3200;Serial.output.clear();printSensorDebug();
  assert(Serial.output.find("heading_valid=1 calibrated=1")!=std::string::npos);
  now=4000;Serial.output.clear();printSensorDebug();
  assert(Serial.output.find("heading_valid=0 calibrated=1")!=std::string::npos); // stale, calibrated
@@ -106,7 +109,7 @@ int main(){
  Serial.output.clear();
  Serial.input="--whoami\n";serviceSerialDebug();assert(whoamiEnabled);
  assert(Serial.output.find("[WHOAMI]")!=std::string::npos);
- assert(Serial.output.find("MPU9250")!=std::string::npos);
+ assert(Serial.output.find("MPU6500/9250")!=std::string::npos);
  assert(Serial.output.find("AK8963")!=std::string::npos);
  assert(Serial.output.find("RFID MFRC522")!=std::string::npos);
  assert(Serial.output.find("IR NORTH")!=std::string::npos);

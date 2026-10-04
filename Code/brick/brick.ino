@@ -25,7 +25,7 @@
  *  8. 9-DoF IMU + Magnetometer (MPU9250 / AK8963 on I2C: SDA=GPIO 21, SCL=GPIO 22):
  *      - Real-time 3-axis accelerometer and gyroscope tracking
  *      - AK8963 3-axis magnetometer for Magnetic North compass heading
- *      - Calculates Pitch, Roll, and Yaw (Compass Heading) for self-orientation
+ *      - Pitch/Roll and aligned-start relative gyro yaw; magnetic heading is not required
  *  9. ERM Vibration Motor Actuator (GPIO 26):
  *      - Tactile haptic feedback on RFID token scans
  *      - Tactile click on physical IR face docking
@@ -40,9 +40,9 @@
 #include <MFRC522.h>
 #include <Wire.h>
 #include <WebServer.h>
-#include <Preferences.h>
 #include "DashboardPage.h"
 #include "DebugCommand.h"
+#include "PlanarYaw.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "soc/soc.h"
@@ -130,7 +130,10 @@ typedef struct __attribute__((packed)) {
   uint64_t sender_uid;     // Full hardware MAC identity; no manual assignment
   uint8_t neighbor_count;
   uint8_t face_mask;       // Body-frame N/E/S/W occupancy, never peer identity
-  uint8_t heading_valid;  // Calibrated and fresh magnetometer sample
+  uint8_t heading_valid;  // Fresh aligned-start relative gyro yaw
+  uint8_t orientation_state; // 0=no IMU, 1=calibrating, 2=ready, 3=tracking lost
+  uint32_t alignment_age_ms;
+  uint8_t command;         // 0=telemetry, 1=restart shared alignment
   float heading;
   char instrument_uid[21]; // Last scanned instrument token, not continuous presence
   uint8_t recent_scan;
@@ -181,9 +184,12 @@ struct ImuData {
   float    mag_x, mag_y, mag_z;      // In uT
   float    pitch;                    // Tilt angle in degrees (-90 to +90)
   float    roll;                     // Roll angle in degrees (-180 to +180)
-  float    heading;                  // Magnetic North heading in degrees (0 to 360)
+  float    heading;                  // Clockwise gyro yaw from aligned start (0..360)
 };
 ImuData imu = {};
+PlanarYaw gyroYaw;
+bool alignmentBroadcastActive = false;
+uint32_t alignmentBroadcastStarted = 0;
 uint32_t lastImuPollTime = 0;
 uint32_t lastMagSample = 0;
 uint32_t lastAccelSample = 0;
@@ -200,32 +206,12 @@ bool debugEnabled = BRICK_DEBUG_DEFAULT;
 uint32_t lastSensorDebugPrint = 0;
 bool whoamiEnabled = false;
 uint32_t lastWhoAmIPrint = 0;
-Preferences calibrationStore;
-bool compassCalibrated = false, compassCalibrating = false;
-uint32_t calibrationStarted = 0;
-float magMin[2], magMax[2], magOffset[2] = {}, magScale[2] = {1, 1};
 bool headingIsValid() {
-  return compassCalibrated && !compassCalibrating && imu.mag_detected &&
-         lastMagSample && millis() - lastMagSample < 1000;
+  return imu.mpu_detected && gyroYaw.valid(millis());
 }
-void sampleCompass(float x, float y) {
+void sampleCompass(float, float) {
+  // Optional magnetic data remains available to debug, but never changes gyro yaw.
   lastMagSample = millis();
-  if (compassCalibrating) {
-    const float values[] = {x, y};
-    for (int i=0; i<2; i++) { magMin[i]=min(magMin[i], values[i]); magMax[i]=max(magMax[i], values[i]); }
-    if (millis() - calibrationStarted >= 20000) {
-      compassCalibrating = false;
-      float rx=(magMax[0]-magMin[0])/2, ry=(magMax[1]-magMin[1])/2;
-      if (rx > 10 && ry > 10) {
-        for (int i=0; i<2; i++) { magOffset[i]=(magMax[i]+magMin[i])/2; magScale[i]=(rx+ry)/(magMax[i]-magMin[i]); }
-        calibrationStore.putFloat("ox",magOffset[0]); calibrationStore.putFloat("oy",magOffset[1]);
-        calibrationStore.putFloat("sx",magScale[0]); calibrationStore.putFloat("sy",magScale[1]);
-        compassCalibrated=true; calibrationStore.putBool("valid",true);
-      }
-    }
-  }
-  float h = atan2((y-magOffset[1])*magScale[1], (x-magOffset[0])*magScale[0])*180/PI;
-  imu.heading = h < 0 ? h+360 : h;
 }
 
 // Hardware Instances
@@ -333,11 +319,11 @@ void buzzBootChime() {
 // ======================================================================================
 // 5. 9-DoF IMU & MAGNETOMETER DRIVERS (MPU9250 & AK8963)
 // ======================================================================================
-void i2cWriteByte(uint8_t devAddr, uint8_t regAddr, uint8_t data) {
+bool i2cWriteByte(uint8_t devAddr, uint8_t regAddr, uint8_t data) {
   Wire.beginTransmission(devAddr);
   Wire.write(regAddr);
   Wire.write(data);
-  Wire.endTransmission();
+  return Wire.endTransmission() == 0;
 }
 
 uint8_t i2cReadByte(uint8_t devAddr, uint8_t regAddr) {
@@ -354,6 +340,7 @@ uint8_t i2cReadByte(uint8_t devAddr, uint8_t regAddr) {
 }
 
 bool initMpu9250() {
+  gyroYaw.reset();
   Wire.beginTransmission(MPU9250_I2C_ADDR);
   if (Wire.endTransmission() != 0) {
     Serial.println("[IMU] MPU9250 not detected at 0x68. Verify SDA=GPIO21, SCL=GPIO22, NCS=3V3, AD0=GND.");
@@ -363,11 +350,24 @@ bool initMpu9250() {
   }
 
   uint8_t whoami = i2cReadByte(MPU9250_I2C_ADDR, 0x75);
-  Serial.printf("[IMU] MPU9250 found! Device WHO_AM_I: 0x%02X\n", whoami);
+  if (lastI2cReadError != 0 || lastI2cReadBytes != 1 || (whoami != 0x70 && whoami != 0x71)) {
+    Serial.printf("[IMU] Unsupported/unreadable identity 0x%02X at 0x68; expected MPU6500=0x70 or MPU9250=0x71.\n", whoami);
+    imu.mpu_detected=false; imu.mag_detected=false; return false;
+  }
+  Serial.printf("[IMU] %s detected (WHO_AM_I=0x%02X); relative gyro yaw does not need a magnetometer.\n",whoami==0x70 ? "MPU6500":"MPU9250",whoami);
 
   // Wake up sensor: clear SLEEP bit in PWR_MGMT_1 (0x6B)
-  i2cWriteByte(MPU9250_I2C_ADDR, 0x6B, 0x00);
+  if (!i2cWriteByte(MPU9250_I2C_ADDR, 0x6B, 0x00)) {
+    imu.mpu_detected=false; imu.mag_detected=false;
+    Serial.println("[IMU] Wake-up write failed; gyro reference unavailable."); return false;
+  }
   delay(15);
+  // Explicitly match the conversion factors used by the reader.
+  if (!i2cWriteByte(MPU9250_I2C_ADDR, 0x1B, 0x00) ||
+      !i2cWriteByte(MPU9250_I2C_ADDR, 0x1C, 0x00)) {
+    imu.mpu_detected=false; imu.mag_detected=false;
+    Serial.println("[IMU] Scale configuration failed; refusing incorrectly scaled yaw."); return false;
+  }
 
   // Disable I2C Master mode in USER_CTRL (0x6A) to allow bypass access to AK8963
   i2cWriteByte(MPU9250_I2C_ADDR, 0x6A, 0x00);
@@ -377,6 +377,11 @@ bool initMpu9250() {
   i2cWriteByte(MPU9250_I2C_ADDR, 0x37, 0x02);
   delay(15);
 
+  if (whoami == 0x70) {
+    imu.mpu_detected=true; imu.mag_detected=false;
+    Serial.println("[IMU] MPU6500: magnetometer not required. Align marked N faces; keep still for 3 seconds.");
+    return true;
+  }
   // Probe AK8963 Magnetometer at 0x0C
   Wire.beginTransmission(AK8963_I2C_ADDR);
   if (Wire.endTransmission() == 0) {
@@ -433,6 +438,9 @@ void readMpu9250() {
       imu.gyro_x = gx / 131.0f;
       imu.gyro_y = gy / 131.0f;
       imu.gyro_z = gz / 131.0f;
+
+      gyroYaw.sample(now, imu.accel_x, imu.accel_y, imu.accel_z, imu.gyro_x, imu.gyro_y, imu.gyro_z);
+      imu.heading = gyroYaw.yaw();
 
       // Compute Pitch and Roll in degrees
       imu.pitch = atan2(imu.accel_y, sqrt(imu.accel_x * imu.accel_x + imu.accel_z * imu.accel_z)) * 180.0f / PI;
@@ -701,7 +709,7 @@ void checkRfidReader() {
 // Wi-Fi callbacks only enqueue; peer state belongs to the main loop.
 struct ReceivedPacket { BrickPacket packet; int8_t rssi; };
 QueueHandle_t receivedPackets;
-const uint32_t PACKET_MAGIC = 0x54524131; // TRA1, incompatible with old two-byte firmware
+const uint32_t PACKET_MAGIC = 0x54524132; // TRA2: gyro orientation + shared alignment; reflash all peers
 
 uint8_t displayNumber(uint64_t uid) {
   uint8_t number = 1;
@@ -716,7 +724,7 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   ReceivedPacket received = {};
   memcpy(&received.packet, data, sizeof(BrickPacket));
   if (received.packet.magic != PACKET_MAGIC || !received.packet.sender_uid ||
-      received.packet.sender_uid == nodeUid) return;
+      received.packet.sender_uid == nodeUid || received.packet.command > 1) return;
   for (size_t i=0; i<sizeof(received.packet.instrument_uid)-1; i++) {
     char c=received.packet.instrument_uid[i];
     if (!c) break;
@@ -730,6 +738,10 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 void processReceivedPackets() {
   ReceivedPacket received;
   while (xQueueReceive(receivedPackets, &received, 0) == pdTRUE) {
+    if (received.packet.command == 1) {
+      gyroYaw.reset(); imu.heading=0;
+      continue;
+    }
     int slot = 0;
     for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++)
       if (peers[i].uid == received.packet.sender_uid) { slot = i; break; }
@@ -751,10 +763,16 @@ void broadcastPacket() {
   BrickPacket packet = {};
   packet.magic = PACKET_MAGIC;
   packet.sender_uid = nodeUid;
+  if (alignmentBroadcastActive) {
+    if (millis()-alignmentBroadcastStarted < 1000) packet.command=1;
+    else alignmentBroadcastActive=false;
+  }
   packet.neighbor_count = (uint8_t)getActiveNeighborCount();
   for (int i = 0; i < 4; i++) if (irFaceDetected[i]) packet.face_mask |= 1 << i;
   packet.heading = imu.heading;
   packet.heading_valid = headingIsValid();
+  packet.orientation_state = imu.mpu_detected ? uint8_t(gyroYaw.state()) : 0;
+  packet.alignment_age_ms = gyroYaw.alignmentAge(millis());
   lastReadUid.toCharArray(packet.instrument_uid, sizeof(packet.instrument_uid));
   packet.recent_scan = rfidActive;
 
@@ -779,6 +797,8 @@ String brickJson(uint64_t uid, const BrickPacket &p, uint32_t age, bool host) {
   json+=",\"ageMs\":"+String(age)+",\"gateway\":"+(host ? "true":"false");
   json+=",\"faces\":"+String(p.face_mask)+",\"heading\":";
   json+=p.heading_valid && isfinite(p.heading) ? String(p.heading,1) : "null";
+  json+=",\"orientationState\":"+String(p.orientation_state)+",\"alignmentAgeMs\":"+String(p.alignment_age_ms);
+  json+=",\"orientationSource\":\"gyro-relative\"";
   // Firmware-generated RFID text contains only hexadecimal digits.
   json+=",\"instrumentUid\":\""+String(p.instrument_uid)+"\",\"recentScan\":"+(p.recent_scan ? "true":"false")+"}";
   return json;
@@ -787,26 +807,27 @@ BrickPacket localTelemetry() {
   BrickPacket p={}; p.sender_uid=nodeUid;
   for(int i=0;i<4;i++) if(irFaceDetected[i]) p.face_mask |= 1<<i;
   p.heading=imu.heading; p.heading_valid=headingIsValid();
+  p.orientation_state=imu.mpu_detected ? uint8_t(gyroYaw.state()) : 0;
+  p.alignment_age_ms=gyroYaw.alignmentAge(millis());
   lastReadUid.toCharArray(p.instrument_uid,sizeof(p.instrument_uid)); p.recent_scan=rfidActive; return p;
 }
 void configureDashboardRoutes() {
   dashboardServer.on("/",HTTP_GET,[](){ dashboardServer.send_P(200,"text/html",DASHBOARD_HTML); });
   dashboardServer.on("/dashboard.js",HTTP_GET,[](){ dashboardServer.send_P(200,"text/javascript",DASHBOARD_JS); });
+  dashboardServer.on("/layout.js",HTTP_GET,[](){ dashboardServer.send_P(200,"text/javascript",LAYOUT_JS); });
   dashboardServer.on("/api/state",HTTP_GET,[](){
-    String json="{\"topology\":\"unresolved\",\"bricks\":["+brickJson(nodeUid,localTelemetry(),0,true);
+    String json="{\"topology\":\"infer-grid\",\"bricks\":["+brickJson(nodeUid,localTelemetry(),0,true);
     for(int i=1;i<=TOTAL_SWARM_BRICKS;i++) if(peers[i].active) {
       json+=","+brickJson(peers[i].uid,peers[i].telemetry,millis()-peers[i].last_seen_ms,false);
     }
     dashboardServer.sendHeader("Cache-Control","no-store");
     dashboardServer.send(200,"application/json",json+"]}");
   });
-  dashboardServer.on("/api/calibrate",HTTP_POST,[](){
-    // Calibrate only the hosting brick. Others temporarily become host when powered alone.
-    if(!imu.mag_detected) { dashboardServer.send(409,"text/plain","Magnetometer unavailable"); return; }
-    for(int i=0;i<2;i++){magMin[i]=1e6;magMax[i]=-1e6;}
-    compassCalibrated=false; calibrationStore.putBool("valid",false);
-    compassCalibrating=true; calibrationStarted=millis();
-    dashboardServer.send(200,"text/plain","Rotate this gateway brick through a full circle, flat on the table, for 20 seconds. Heading remains unavailable if calibration fails.");
+  dashboardServer.on("/api/align",HTTP_POST,[](){
+    if(!imu.mpu_detected) { dashboardServer.send(409,"text/plain","Gateway IMU unavailable; fix it before alignment."); return; }
+    gyroYaw.reset(); imu.heading=0;
+    alignmentBroadcastActive=true; alignmentBroadcastStarted=millis();
+    dashboardServer.send(200,"text/plain","Alignment restart broadcast. All marked N faces must point the same way; keep every brick flat and still for at least 5 seconds. Check every card is ready.");
   });
 }
 void serviceDashboard() {
@@ -849,15 +870,10 @@ void printDiagnosticStatus() {
                 irFaceDetected[FACE_WEST]  ? "YES" : "--");
 
   if (imu.mpu_detected) {
-    if (imu.mag_detected) {
-      Serial.printf("IMU (MPU9250):    Heading: %.1f deg | Pitch: %.1f deg | Roll: %.1f deg [ONLINE]\n",
-                    imu.heading, imu.pitch, imu.roll);
-    } else {
-      Serial.printf("IMU (MPU9250):    Pitch: %.1f deg | Roll: %.1f deg [6-DoF ONLINE]\n",
-                    imu.pitch, imu.roll);
-    }
+    Serial.printf("IMU: Relative gyro yaw: %.1f deg | Pitch: %.1f | Roll: %.1f | yaw_state=%u valid=%u | Magnetometer optional: %s\n",
+                  imu.heading,imu.pitch,imu.roll,uint8_t(gyroYaw.state()),headingIsValid(),imu.mag_detected ? "present":"absent");
   } else {
-    Serial.println("IMU (MPU9250):    [OFFLINE / NOT CONNECTED]");
+    Serial.println("IMU: [ACCEL/GYRO UNAVAILABLE / NOT CONNECTED]");
   }
 
   Serial.println("ERM Motor (D26):  [READY]");
@@ -922,7 +938,7 @@ void printSensorDebug() {
   Serial.printf("[DEBUG GYRO] raw_xyz=%d,%d,%d deg_s_xyz=%.3f,%.3f,%.3f temp_raw=%d\n",rawGyro[0],rawGyro[1],rawGyro[2],imu.gyro_x,imu.gyro_y,imu.gyro_z,rawTemperature);
   Serial.printf("[DEBUG MAG] boot_detected=%u sample_age_ms=%ld last_tx_status=%d last_read_bytes=%d/7 ST1=0x%02X ST1_tx_status=%d ST1_read_bytes=%d/1 ST2=0x%02X overflow=%u\n",imu.mag_detected,sampleAge(lastMagSample),magReadError,magReadBytes,magStatus1,magStatusReadError,magStatusReadBytes,magStatus2,!!(magStatus2&0x08));
   Serial.printf("[DEBUG MAG] raw_xyz=%d,%d,%d uT_xyz=%.3f,%.3f,%.3f\n",rawMag[0],rawMag[1],rawMag[2],imu.mag_x,imu.mag_y,imu.mag_z);
-  Serial.printf("[DEBUG ORIENTATION] pitch=%.2f roll=%.2f heading=%.2f heading_valid=%u calibrated=%u calibrating=%u\n",imu.pitch,imu.roll,imu.heading,headingIsValid(),compassCalibrated,compassCalibrating);
+  Serial.printf("[DEBUG ORIENTATION] pitch=%.2f roll=%.2f heading=%.2f heading_valid=%u calibrated=%u calibrating=%u yaw_state=%u gyro_bias_z=%.5f alignment_age_ms=%lu\n",imu.pitch,imu.roll,imu.heading,headingIsValid(),gyroYaw.state()==PlanarYaw::Ready,gyroYaw.state()==PlanarYaw::Calibrating,uint8_t(gyroYaw.state()),gyroYaw.bias(),(unsigned long)gyroYaw.alignmentAge(millis()));
   Serial.println("[DEBUG] Readings are cached; sample_age_ms=-1 means NO sample, not a real zero measurement.");
   for(int i=0;i<4;i++) Serial.printf("[DEBUG IR] face=%s gpio=%u raw=%d docked=%u debounce=%u\n",FACE_NAMES[i],IR_PINS[i],digitalRead(IR_PINS[i]),irFaceDetected[i],irDebounceCounters[i]);
   Serial.printf("[DEBUG RFID] reader_version=0x%02X last_instrument_uid=%s scan_age_ms=%ld recent_scan=%u (not continuous presence)\n",rfid.PCD_ReadRegister(rfid.VersionReg),lastReadUid.length()?lastReadUid.c_str():"none",lastReadUid.length()?sampleAge(rfidDetectedTime):-1,rfidActive);
@@ -947,7 +963,7 @@ bool printSensorWhoAmI() {
 
   // 1. MPU9250 Accelerometer / Gyroscope (Expected: 0x71 for genuine MPU9250)
   uint8_t mpuWho = i2cReadByte(MPU9250_I2C_ADDR, 0x75);
-  bool mpuMatch = verifySensorWhoAmI("MPU9250 (0x68 Reg 0x75)", 0x71, mpuWho, true);
+  bool mpuMatch = verifySensorWhoAmI("MPU6500/9250 (0x68 Reg 0x75)", mpuWho == 0x70 ? 0x70 : 0x71, mpuWho, true);
   if (!mpuMatch) {
     allMatch = false;
     if (mpuWho == 0x70) {
@@ -961,7 +977,7 @@ bool printSensorWhoAmI() {
   uint8_t magWho = i2cReadByte(AK8963_I2C_ADDR, 0x00);
   bool magMatch = verifySensorWhoAmI("AK8963 Mag (0x0C Reg 0x00)", 0x48, magWho, true);
   if (!magMatch) {
-    allMatch = false;
+    Serial.println("         --> Magnetometer is optional; relative gyro yaw still works.");
     if (magWho == 0xFF || magWho == 0x00) {
       Serial.println("         --> NOTE: Address 0x0C not responding. AK8963 die missing or I2C bypass disabled.");
     }
@@ -1058,10 +1074,6 @@ void setup() {
   nodeUid = ESP.getEfuseMac();
   receivedPackets = xQueueCreate(16, sizeof(ReceivedPacket));
   if (!receivedPackets) { while (true) delay(1000); }
-  calibrationStore.begin("tray-compass", false);
-  compassCalibrated=calibrationStore.getBool("valid",false);
-  magOffset[0]=calibrationStore.getFloat("ox",0); magOffset[1]=calibrationStore.getFloat("oy",0);
-  magScale[0]=calibrationStore.getFloat("sx",1); magScale[1]=calibrationStore.getFloat("sy",1);
   Serial.begin(115200);
   delay(400);
 
@@ -1160,6 +1172,7 @@ void setup() {
   }
 
   configureDashboardRoutes();
+  Serial.println("[YAW] Align every marked N face the same way, keep flat and still for 3 seconds. Gyro yaw is relative and drifts.");
   Serial.println("[DEBUG] Send --debug with newline at 115200 baud for all sensor readings; --debug-i2c probes the IMU bus.");
   if(debugEnabled) { printDebugBus(); printSensorDebug(); }
   Serial.printf("[INFO] Brick #%d initialization complete. Running swarm loop...\n\n", BRICK_ID);

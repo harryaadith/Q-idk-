@@ -8,6 +8,18 @@
 
 ---
 
+## Current revision: magnetometer-independent 2D layout
+
+- MPU6500 (WHO_AM_I 0x70) and MPU9250 (0x71) are accepted for accel/gyro operation. A magnetometer is optional.
+- Flat, stationary aligned startup calibrates gyro bias over three seconds. Relative yaw is integrated from gyro Z; it drifts and is not magnetic north.
+- The dashboard solves connected square-grid configurations from 90-degree relative rotations and complementary occupied faces. It displays alternative identity layouts and supports local operator confirmation rather than claiming ambiguous data is unique.
+- The group realignment button calls `/api/align`; peers receive repeated alignment commands over ESP-NOW. All physical N marks must be aligned first, and every card must become ready.
+- Gaps over 500 ms, tilt or gyro saturation invalidate tracking. The solver rejects stale, off-grid and contradictory inputs. The packet format is TRA2; every board must be reflashed.
+- Host tests cover gyro bias/integration, tracking loss, rotated grid, strip ambiguity, independent exhaustive layout checks, SVG rendering and confirmation invalidation. Full board compilation and physical testing remain pending.
+- The entries below are an earlier implementation snapshot. Their magnetic-heading and persistent-compass-calibration descriptions are superseded by this revision; consult HOW_TO_RUN.md for current operation.
+
+---
+
 ## 📊 Subsystem Status Dashboard
 
 | Subsystem / Peripheral | Status | Bus / Pin(s) | Operational Function |
