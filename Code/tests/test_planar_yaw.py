@@ -21,8 +21,19 @@ int main() {
  yaw.reset();calibrate(yaw,100,.5,-1);
  for(uint32_t t=3200;t<=4100;t+=100) yaw.sample(t,0,0,-1,0,0,90.5);
  assert(std::fabs(yaw.yaw()-90)<.01); // Upside-down sensor, same clockwise physical rotation.
- yaw.reset();for(uint32_t t=100;t<3100;t+=100) yaw.sample(t,0,0,1,0,0,10);
+ yaw.reset();for(uint32_t t=100;t<3100;t+=100) yaw.sample(t,0,0,1,0,0,25);
  assert(yaw.state()==PlanarYaw::Calibrating);calibrate(yaw,3200);
+ // Real-world hardware with resting factory bias (gx=7.2, gy=4.5, gz=0.7) calibrates and tracks:
+ {
+  yaw.reset();
+  const float ax = -0.133f, ay = 0.025f, az = 1.092f;
+  const float mag = std::sqrt(ax*ax + ay*ay + az*az);
+  for(uint32_t t=100;t<=3100;t+=100) yaw.sample(t,ax,ay,az,7.214f,4.5f,0.7f);
+  assert(yaw.state()==PlanarYaw::Ready);
+  for(uint32_t t=3200;t<=4100;t+=100)
+   yaw.sample(t,ax,ay,az,7.214f - 90.f*ax/mag, 4.5f - 90.f*ay/mag, 0.7f - 90.f*az/mag);
+  assert(std::fabs(yaw.yaw()-90)<.02);
+ }
  // A tilted or sideways IMU mount calibrates and tracks the physical vertical axis.
  for (float tilt : {0.1745329f, .7853982f, 1.5707963f}) {
   yaw.reset();float x=std::sin(tilt), z=std::cos(tilt);

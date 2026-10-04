@@ -30,12 +30,12 @@ public:
                   std::isfinite(gx) && std::isfinite(gy) && std::isfinite(gz);
     const float accel[3] = {ax, ay, az}, gyro[3] = {gx, gy, gz};
     const float magnitude = std::sqrt(ax*ax + ay*ay + az*az);
-    const bool gravityLike = finite && magnitude > .85f && magnitude < 1.15f;
+    const bool gravityLike = finite && magnitude > .75f && magnitude < 1.25f;
     uint32_t dt = haveSample_ ? now - last_ : 0;
     bool gap = haveSample_ && dt > 500;
     last_ = now; haveSample_ = true;
     if (state_ == Calibrating) {
-      bool still = gravityLike && std::fabs(gx) < 3 && std::fabs(gy) < 3 && std::fabs(gz) < 3;
+      bool still = gravityLike && std::fabs(gx) < 20 && std::fabs(gy) < 20 && std::fabs(gz) < 20;
       if (!still || gap) { clearWindow(); return; }
       if (!haveWindow_) { clearWindow(); windowStart_ = now; haveWindow_ = true; }
       count_++;
@@ -47,10 +47,10 @@ public:
         double accelVariance = 0;
         for (int i=0; i<3; ++i) {
           const double mean = sums_[i]/count_, amean = accelSums_[i]/count_;
-          if (squares_[i]/count_ - mean*mean > .0225) { clearWindow(); return; }
+          if (squares_[i]/count_ - mean*mean > .36) { clearWindow(); return; }
           accelVariance += accelSquares_[i]/count_ - amean*amean;
         }
-        if (accelVariance > .0025) { clearWindow(); return; } // Stable gravity, any mounting angle.
+        if (accelVariance > .01) { clearWindow(); return; } // Stable gravity, any mounting angle.
         float lengthSquared = 0;
         for (int i=0; i<3; ++i) {
           biases_[i] = float(sums_[i]/count_);
@@ -58,7 +58,7 @@ public:
           lengthSquared += gravity_[i]*gravity_[i];
         }
         const float length = std::sqrt(lengthSquared);
-        if (length < .85f) { clearWindow(); return; }
+        if (length < .75f) { clearWindow(); return; }
         for (int i=0; i<3; ++i) gravity_[i] /= length;
         yaw_ = 0; alignedAt_ = now; state_ = Ready;
       }
