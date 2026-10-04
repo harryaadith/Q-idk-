@@ -15,7 +15,7 @@
  *      - Lights GREEN when an RFID tag/neighbor card is read.
  *      - Otherwise, blinks BLUE then RED in order of neighbor count (solid RED if 0).
  *      - Solid BLUE when docked / close to all neighbors.
- *  5. RFID reader (MFRC522) via VSPI tracking neighbor IDs and token presence.
+ *  5. RFID reader (MFRC522) via VSPI detecting top-facing instrument tokens.
  *  6. 4-Face Directional IR Sensors (North=34, East=35, South=32, West=33) for docking.
  *  7. Audio Buzzer (GPIO 27) for acoustic feedback:
  *      - RFID read confirmation chirp
@@ -39,13 +39,19 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Wire.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include "DashboardPage.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
 // ======================================================================================
-// 1. CONFIGURATION PARAMETERS (Configure BRICK_ID per node before flashing)
+// 1. CONFIGURATION PARAMETERS (same sketch on every brick)
 // ======================================================================================
-#define BRICK_ID              4        // Unique ID for this brick: 1, 2, 3, or 4
+uint8_t BRICK_ID = 1;                  // Automatic display number; stable identity is nodeUid
+uint64_t nodeUid = 0;
 #define TOTAL_SWARM_BRICKS    4        // Total number of bricks in the multi-agent system
 #define WIFI_CHANNEL          1        // ESP-NOW WiFi Channel (must be identical across bricks)
 
@@ -119,18 +125,32 @@
 // Packet exchanged between microbots.
 // Specification: Each ESP talks to other ESPs exchanging its ID and current neighbor count.
 typedef struct __attribute__((packed)) {
-  uint8_t sender_id;       // Unique ID of the transmitting brick (1..4)
-  uint8_t neighbor_count;  // Count of currently active neighbors seen by sender
+  uint32_t magic;          // Reject old/incompatible packets
+  uint64_t sender_uid;     // Full hardware MAC identity; no manual assignment
+  uint8_t neighbor_count;
+  uint8_t face_mask;       // Body-frame N/E/S/W occupancy, never peer identity
+  uint8_t heading_valid;  // Calibrated and fresh magnetometer sample
+  float heading;
+  char instrument_uid[21]; // Last scanned instrument token, not continuous presence
+  uint8_t recent_scan;
 } BrickPacket;
+
+// Explicit prototypes keep Arduino preprocessing independent of custom-type order.
+String brickJson(uint64_t uid, const BrickPacket &p, uint32_t age, bool host);
+BrickPacket localTelemetry();
 
 // Local tracking record for a peer brick
 struct PeerInfo {
+  BrickPacket telemetry;
+  uint64_t uid;                      // Hardware identity, independent of display number
   bool     active;                   // True if peer has broadcasted within PEER_TIMEOUT_MS
   uint32_t last_seen_ms;             // Timestamp of last received packet
   float    rssi_ema;                 // Smoothed RSSI signal strength
   uint8_t  reported_neighbor_count;  // Neighbor count reported by peer
   bool     is_close;                 // Proximity status with hysteresis
 };
+
+uint8_t displayNumber(uint64_t uid);
 
 // Peer records: indices 1 to TOTAL_SWARM_BRICKS
 PeerInfo peers[TOTAL_SWARM_BRICKS + 1];
@@ -164,6 +184,34 @@ struct ImuData {
 };
 ImuData imu = {};
 uint32_t lastImuPollTime = 0;
+uint32_t lastMagSample = 0;
+Preferences calibrationStore;
+bool compassCalibrated = false, compassCalibrating = false;
+uint32_t calibrationStarted = 0;
+float magMin[2], magMax[2], magOffset[2] = {}, magScale[2] = {1, 1};
+bool headingIsValid() {
+  return compassCalibrated && !compassCalibrating && imu.mag_detected &&
+         lastMagSample && millis() - lastMagSample < 1000;
+}
+void sampleCompass(float x, float y) {
+  lastMagSample = millis();
+  if (compassCalibrating) {
+    const float values[] = {x, y};
+    for (int i=0; i<2; i++) { magMin[i]=min(magMin[i], values[i]); magMax[i]=max(magMax[i], values[i]); }
+    if (millis() - calibrationStarted >= 20000) {
+      compassCalibrating = false;
+      float rx=(magMax[0]-magMin[0])/2, ry=(magMax[1]-magMin[1])/2;
+      if (rx > 10 && ry > 10) {
+        for (int i=0; i<2; i++) { magOffset[i]=(magMax[i]+magMin[i])/2; magScale[i]=(rx+ry)/(magMax[i]-magMin[i]); }
+        calibrationStore.putFloat("ox",magOffset[0]); calibrationStore.putFloat("oy",magOffset[1]);
+        calibrationStore.putFloat("sx",magScale[0]); calibrationStore.putFloat("sy",magScale[1]);
+        compassCalibrated=true; calibrationStore.putBool("valid",true);
+      }
+    }
+  }
+  float h = atan2((y-magOffset[1])*magScale[1], (x-magOffset[0])*magScale[0])*180/PI;
+  imu.heading = h < 0 ? h+360 : h;
+}
 
 // Hardware Instances
 MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
@@ -177,18 +225,7 @@ bool     rfidActive          = false;
 String   lastReadUid         = "";
 bool     prevCloseToAll      = false;
 
-// Known neighbor RFID Card UIDs (Customizable for physical microbot tokens)
-struct KnownTag {
-  const char* uid;
-  uint8_t brick_id;
-};
-const KnownTag KNOWN_TAGS[] = {
-  {"1A2B3C4D", 1},
-  {"5E6F7A8B", 2},
-  {"9C0D1E2F", 3},
-  {"3A4B5C6D", 4}
-};
-const size_t KNOWN_TAGS_COUNT = sizeof(KNOWN_TAGS) / sizeof(KNOWN_TAGS[0]);
+// Top-facing RFID identifies instrument tokens, never neighboring bricks.
 
 // ======================================================================================
 // 4. LOW-LEVEL HARDWARE DRIVERS (Buzzer, ERM Motor, LEDs, IR)
@@ -403,10 +440,7 @@ void readMpu9250() {
             imu.mag_y = my * 0.15f;
             imu.mag_z = mz * 0.15f;
 
-            // Planar compass heading in degrees relative to Magnetic North
-            float h = atan2(imu.mag_y, imu.mag_x) * 180.0f / PI;
-            if (h < 0.0f) h += 360.0f;
-            imu.heading = h;
+            sampleCompass(imu.mag_x, imu.mag_y);
           }
         }
       }
@@ -463,7 +497,6 @@ void checkIrSensors() {
 int getActiveNeighborCount() {
   int count = 0;
   for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++) {
-    if (i == BRICK_ID) continue;
     if (peers[i].active) {
       count++;
     }
@@ -477,7 +510,6 @@ bool isCloseToAllNeighbors() {
   int closeCount = 0;
 
   for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++) {
-    if (i == BRICK_ID) continue;
     if (peers[i].active) {
       activeCount++;
       if (peers[i].is_close) {
@@ -499,19 +531,18 @@ bool isCloseToAllNeighbors() {
 void pruneStalePeers() {
   uint32_t now = millis();
   for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++) {
-    if (i == BRICK_ID) continue;
     if (peers[i].active && (now - peers[i].last_seen_ms > PEER_TIMEOUT_MS)) {
       peers[i].active = false;
       peers[i].is_close = false;
-      Serial.printf("[TOPO] Neighbor Brick %d timed out (no packets for %d ms)\n", 
-                    i, PEER_TIMEOUT_MS);
+      Serial.printf("[TOPO] Neighbor Brick %d timed out (no packets for %d ms)\n",
+                    displayNumber(peers[i].uid), PEER_TIMEOUT_MS);
     }
   }
 }
 
 // Update proximity status with hysteresis to prevent rapid flapping
 void evaluateProximity(uint8_t id, int8_t rssi) {
-  if (id == 0 || id > TOTAL_SWARM_BRICKS || id == BRICK_ID) return;
+  if (id == 0 || id > TOTAL_SWARM_BRICKS) return;
 
   PeerInfo &p = peers[id];
   if (!p.active) {
@@ -616,22 +647,8 @@ void checkRfidReader() {
   uidStr.toUpperCase();
   lastReadUid = uidStr;
 
-  // Identify neighbor if tag matches known table
-  uint8_t neighborId = 0;
-  for (size_t i = 0; i < KNOWN_TAGS_COUNT; i++) {
-    if (uidStr.equalsIgnoreCase(KNOWN_TAGS[i].uid)) {
-      neighborId = KNOWN_TAGS[i].brick_id;
-      break;
-    }
-  }
-
   Serial.println("========================================");
-  Serial.printf("[RFID] Card Detected! UID: %s\n", uidStr.c_str());
-  if (neighborId > 0) {
-    Serial.printf("[RFID] Identified Neighbor Brick: #%d\n", neighborId);
-  } else {
-    Serial.println("[RFID] Generic Neighbor / Swarm Token Detected");
-  }
+  Serial.printf("[RFID] Instrument token UID: %s\n", uidStr.c_str());
   Serial.println("[LED] Lighting Green LED (RGB)");
   Serial.println("[BUZZER] Triggering RFID confirmation beep");
   Serial.println("[HAPTIC] Triggering ERM tactile pulse");
@@ -652,45 +669,134 @@ void checkRfidReader() {
 // 10. ESP-NOW WIRELESS COMMUNICATION
 // ======================================================================================
 
-// Callback executed upon receiving an ESP-NOW frame
+// Wi-Fi callbacks only enqueue; peer state belongs to the main loop.
+struct ReceivedPacket { BrickPacket packet; int8_t rssi; };
+QueueHandle_t receivedPackets;
+const uint32_t PACKET_MAGIC = 0x54524131; // TRA1, incompatible with old two-byte firmware
+
+uint8_t displayNumber(uint64_t uid) {
+  uint8_t number = 1;
+  if (nodeUid < uid) number++;
+  for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++)
+    if (peers[i].active && peers[i].uid < uid) number++;
+  return number;
+}
+
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  if (len != sizeof(BrickPacket)) {
-    return;
+  if (!receivedPackets || len != sizeof(BrickPacket)) return;
+  ReceivedPacket received = {};
+  memcpy(&received.packet, data, sizeof(BrickPacket));
+  if (received.packet.magic != PACKET_MAGIC || !received.packet.sender_uid ||
+      received.packet.sender_uid == nodeUid) return;
+  for (size_t i=0; i<sizeof(received.packet.instrument_uid)-1; i++) {
+    char c=received.packet.instrument_uid[i];
+    if (!c) break;
+    if (!((c>='0' && c<='9') || (c>='A' && c<='F'))) return;
   }
+  received.packet.instrument_uid[sizeof(received.packet.instrument_uid)-1]=0;
+  received.rssi = info && info->rx_ctrl ? info->rx_ctrl->rssi : -100;
+  xQueueSend(receivedPackets, &received, 0);
+}
 
-  BrickPacket incoming;
-  memcpy(&incoming, data, sizeof(BrickPacket));
-
-  // Ignore our own looped back packets
-  if (incoming.sender_id == BRICK_ID) {
-    return;
+void processReceivedPackets() {
+  ReceivedPacket received;
+  while (xQueueReceive(receivedPackets, &received, 0) == pdTRUE) {
+    int slot = 0;
+    for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++)
+      if (peers[i].uid == received.packet.sender_uid) { slot = i; break; }
+    if (!slot) {
+      for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++)
+        if (!peers[i].active) { slot = i; peers[i] = {}; break; }
+    }
+    if (!slot) continue; // Bounded capacity; never index arrays by an identity.
+    peers[slot].uid = received.packet.sender_uid;
+    evaluateProximity(slot, received.rssi);
+    peers[slot].reported_neighbor_count = received.packet.neighbor_count;
+    peers[slot].telemetry = received.packet;
   }
-
-  if (incoming.sender_id == 0 || incoming.sender_id > TOTAL_SWARM_BRICKS) {
-    return;
-  }
-
-  // Extract packet RSSI from radio control structure
-  int8_t rssi = -70;
-  if (info && info->rx_ctrl) {
-    rssi = info->rx_ctrl->rssi;
-  }
-
-  // Update peer state and proximity
-  evaluateProximity(incoming.sender_id, rssi);
-  peers[incoming.sender_id].reported_neighbor_count = incoming.neighbor_count;
+  BRICK_ID = displayNumber(nodeUid);
 }
 
 // Broadcast local state packet to all peers
 void broadcastPacket() {
-  BrickPacket packet;
-  packet.sender_id = BRICK_ID;
+  BrickPacket packet = {};
+  packet.magic = PACKET_MAGIC;
+  packet.sender_uid = nodeUid;
   packet.neighbor_count = (uint8_t)getActiveNeighborCount();
+  for (int i = 0; i < 4; i++) if (irFaceDetected[i]) packet.face_mask |= 1 << i;
+  packet.heading = imu.heading;
+  packet.heading_valid = headingIsValid();
+  lastReadUid.toCharArray(packet.instrument_uid, sizeof(packet.instrument_uid));
+  packet.recent_scan = rfidActive;
 
   esp_err_t res = esp_now_send(broadcastAddress, (uint8_t*)&packet, sizeof(packet));
   if (res != ESP_OK) {
     Serial.printf("[ERROR] ESP-NOW send failed with error: %d\n", res);
   }
+}
+
+// Lowest live hardware identity hosts the dashboard. Elections need direct radio visibility.
+WebServer dashboardServer(80);
+bool dashboardHost = false;
+uint64_t electionCandidate = 0;
+uint32_t candidateSince = 0;
+const char* TRAY_SSID = "SmartSurgeryTray";
+const char* TRAY_PASSWORD = "smarttray22";
+String uidText(uint64_t uid) {
+  char text[17]; snprintf(text,sizeof(text),"%012llX",(unsigned long long)uid); return String(text);
+}
+String brickJson(uint64_t uid, const BrickPacket &p, uint32_t age, bool host) {
+  String json="{\"uid\":\""+uidText(uid)+"\",\"number\":"+String(displayNumber(uid));
+  json+=",\"ageMs\":"+String(age)+",\"gateway\":"+(host ? "true":"false");
+  json+=",\"faces\":"+String(p.face_mask)+",\"heading\":";
+  json+=p.heading_valid && isfinite(p.heading) ? String(p.heading,1) : "null";
+  // Firmware-generated RFID text contains only hexadecimal digits.
+  json+=",\"instrumentUid\":\""+String(p.instrument_uid)+"\",\"recentScan\":"+(p.recent_scan ? "true":"false")+"}";
+  return json;
+}
+BrickPacket localTelemetry() {
+  BrickPacket p={}; p.sender_uid=nodeUid;
+  for(int i=0;i<4;i++) if(irFaceDetected[i]) p.face_mask |= 1<<i;
+  p.heading=imu.heading; p.heading_valid=headingIsValid();
+  lastReadUid.toCharArray(p.instrument_uid,sizeof(p.instrument_uid)); p.recent_scan=rfidActive; return p;
+}
+void configureDashboardRoutes() {
+  dashboardServer.on("/",HTTP_GET,[](){ dashboardServer.send_P(200,"text/html",DASHBOARD_HTML); });
+  dashboardServer.on("/dashboard.js",HTTP_GET,[](){ dashboardServer.send_P(200,"text/javascript",DASHBOARD_JS); });
+  dashboardServer.on("/api/state",HTTP_GET,[](){
+    String json="{\"topology\":\"unresolved\",\"bricks\":["+brickJson(nodeUid,localTelemetry(),0,true);
+    for(int i=1;i<=TOTAL_SWARM_BRICKS;i++) if(peers[i].active) {
+      json+=","+brickJson(peers[i].uid,peers[i].telemetry,millis()-peers[i].last_seen_ms,false);
+    }
+    dashboardServer.sendHeader("Cache-Control","no-store");
+    dashboardServer.send(200,"application/json",json+"]}");
+  });
+  dashboardServer.on("/api/calibrate",HTTP_POST,[](){
+    // Calibrate only the hosting brick. Others temporarily become host when powered alone.
+    if(!imu.mag_detected) { dashboardServer.send(409,"text/plain","Magnetometer unavailable"); return; }
+    for(int i=0;i<2;i++){magMin[i]=1e6;magMax[i]=-1e6;}
+    compassCalibrated=false; calibrationStore.putBool("valid",false);
+    compassCalibrating=true; calibrationStarted=millis();
+    dashboardServer.send(200,"text/plain","Rotate this gateway brick through a full circle, flat on the table, for 20 seconds. Heading remains unavailable if calibration fails.");
+  });
+}
+void serviceDashboard() {
+  uint64_t lowest=nodeUid;
+  for(int i=1;i<=TOTAL_SWARM_BRICKS;i++)
+    if(peers[i].active && millis()-peers[i].last_seen_ms<=PEER_TIMEOUT_MS && peers[i].uid<lowest) lowest=peers[i].uid;
+  if(lowest!=electionCandidate) { electionCandidate=lowest; candidateSince=millis(); }
+  bool shouldHost=lowest==nodeUid && millis()-candidateSince>=4000;
+  if(dashboardHost && lowest!=nodeUid) {
+    dashboardServer.stop(); WiFi.softAPdisconnect(false); WiFi.mode(WIFI_STA); dashboardHost=false;
+  }
+  if(shouldHost && !dashboardHost) {
+    WiFi.mode(WIFI_AP_STA);
+    if(WiFi.softAP(TRAY_SSID,TRAY_PASSWORD,WIFI_CHANNEL)) {
+      dashboardServer.begin(); dashboardHost=true;
+      Serial.println("[DASHBOARD] Join SmartSurgeryTray; open http://192.168.4.1");
+    }
+  }
+  if(dashboardHost) dashboardServer.handleClient();
 }
 
 // Periodic serial console diagnostics
@@ -738,10 +844,9 @@ void printDiagnosticStatus() {
   }
 
   for (int i = 1; i <= TOTAL_SWARM_BRICKS; i++) {
-    if (i == BRICK_ID) continue;
     if (peers[i].active) {
       Serial.printf("  -> Peer #%d: RSSI: %.1f dBm [%s] | Reports %d neighbors\n",
-                    i,
+                    displayNumber(peers[i].uid),
                     peers[i].rssi_ema,
                     peers[i].is_close ? "CLOSE" : "FAR",
                     peers[i].reported_neighbor_count);
@@ -757,6 +862,13 @@ void setup() {
   // Disable hardware brownout detector to prevent reboot loops from Wi-Fi RF power surges & heavy peripheral load
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
+  nodeUid = ESP.getEfuseMac();
+  receivedPackets = xQueueCreate(16, sizeof(ReceivedPacket));
+  if (!receivedPackets) { while (true) delay(1000); }
+  calibrationStore.begin("tray-compass", false);
+  compassCalibrated=calibrationStore.getBool("valid",false);
+  magOffset[0]=calibrationStore.getFloat("ox",0); magOffset[1]=calibrationStore.getFloat("oy",0);
+  magScale[0]=calibrationStore.getFloat("sx",1); magScale[1]=calibrationStore.getFloat("sy",1);
   Serial.begin(115200);
   delay(400);
 
@@ -819,11 +931,11 @@ void setup() {
   }
 
   // Initialize Wi-Fi in Station mode for ESP-NOW
-  delay(150); // Power rail settling delay
+  delay(150);
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  WiFi.setTxPower(WIFI_POWER_11dBm);
   esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  WiFi.setTxPower(WIFI_POWER_11dBm); // Lower peak RF current
 
   Serial.print("[WIFI] MAC Address: ");
   Serial.println(WiFi.macAddress());
@@ -854,11 +966,15 @@ void setup() {
     Serial.println("[ESP-NOW] Broadcast peer registered successfully.");
   }
 
+  configureDashboardRoutes();
   Serial.printf("[INFO] Brick #%d initialization complete. Running swarm loop...\n\n", BRICK_ID);
 }
 
 void loop() {
   uint32_t now = millis();
+
+  processReceivedPackets();
+  serviceDashboard();
 
   // 1. Check 4 Directional IR Sensors for Face Docking
   checkIrSensors();
@@ -877,6 +993,7 @@ void loop() {
 
   // 5. Prune stale peers that have timed out
   pruneStalePeers();
+  BRICK_ID = displayNumber(nodeUid);
 
   // 6. Update On-Board and RGB LED animations & Haptics
   updateLedStates();

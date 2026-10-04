@@ -1,0 +1,47 @@
+from pathlib import Path
+import subprocess
+root=Path(__file__).resolve().parents[2]
+s=(root/'Code/brick.ino').read_text()
+# Run the actual peer registry and identity functions with a host queue adapter.
+a=s[s.index('uint8_t displayNumber(uint64_t uid) {'):s.index('// Broadcast local state packet to all peers')]
+source='''#include <cstdint>
+#include <cstring>
+#include <deque>
+#include <cassert>
+#define TOTAL_SWARM_BRICKS 4
+struct BrickPacket { uint32_t magic; uint64_t sender_uid; uint8_t neighbor_count; uint8_t face_mask; uint8_t heading_valid; float heading; char instrument_uid[21]; uint8_t recent_scan; };
+struct PeerInfo { BrickPacket telemetry={}; uint64_t uid=0; bool active=false; uint8_t reported_neighbor_count=0; };
+struct ReceivedPacket { BrickPacket packet; int8_t rssi; };
+PeerInfo peers[5]; uint64_t nodeUid=200; uint8_t BRICK_ID=1;
+const uint32_t PACKET_MAGIC=0x54524131;
+std::deque<ReceivedPacket> queue;
+void* receivedPackets=&queue;
+#define pdTRUE 1
+struct Rx { int8_t rssi; };
+struct esp_now_recv_info_t { Rx* rx_ctrl; };
+void xQueueSend(void*, ReceivedPacket* p, int) { queue.push_back(*p); }
+int xQueueReceive(void*, ReceivedPacket* p, int) { if(queue.empty()) return 0; *p=queue.front(); queue.pop_front(); return 1; }
+void evaluateProximity(uint8_t slot, int8_t) { peers[slot].active=true; }
+'''+a+'''
+void send(uint64_t uid, uint32_t magic=PACKET_MAGIC) {
+ BrickPacket p={}; p.magic=magic; p.sender_uid=uid; p.neighbor_count=2; onDataRecv(nullptr,(uint8_t*)&p,sizeof(p)); processReceivedPackets();
+}
+int main() {
+ send(200); send(0); send(100,0); assert(queue.empty()); assert(BRICK_ID==1);
+ send(300); send(100); assert(BRICK_ID==2); assert(displayNumber(100)==1); assert(displayNumber(300)==3);
+ send(100); int count=0; for(auto p:peers) count+=p.active; assert(count==2);
+ for(auto &p:peers) if(p.uid==100) p.active=false;
+ processReceivedPackets(); assert(BRICK_ID==1); // Timeout removes a lower-ranked peer.
+ send(100); assert(BRICK_ID==2); // Rejoin keeps hardware identity.
+ send(400); send(500); send(600); // Full registry must never overrun.
+ assert(displayNumber(nodeUid)==2);
+}
+'''
+import tempfile, os
+with tempfile.TemporaryDirectory() as folder:
+    os.chdir(folder)
+    Path('work').mkdir()
+    Path('work/identity_test.cpp').write_text(source)
+    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','work/identity_test.cpp','-o','work/identity_test'],check=True)
+    subprocess.run(['work/identity_test'],check=True)
+print('PASS: actual firmware functions reject incompatible/self packets, handle arrival order, duplicates, timeout/rejoin and full capacity.')

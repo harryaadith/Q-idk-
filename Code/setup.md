@@ -79,3 +79,8 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 - [`INSTRUCTIONS.MD`](INSTRUCTIONS.MD): Complete system architecture, wiring guides, transistor schematics, and pinout matrix.
 - [`setup.md`](setup.md): Quickstart and flashing guide.
 - [`tests/`](tests/): Multi-agent simulation and automated test scripts (`test_brick_logic.py`, 7/7 passing).
+
+
+## Wireless dashboard update
+
+The manual BRICK_ID instructions above are superseded by automatic hardware identities. See [wireless setup and limitations](Dashboard/README.md). Reflash all boards with the new identical sketches; their radio packet format is incompatible with the earlier firmware.
