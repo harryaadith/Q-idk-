@@ -1,6 +1,8 @@
 # Multi-Agent Microbots — Historical Sketches & Prototypes Archive
 
-This directory organizes all earlier experimental sketches, exploratory prototypes, and initial topology experiments developed prior to consolidation into the unified production firmware [`Code/brick.ino`](../brick.ino).
+These sketches are historical references. The current firmware and wireless protocol are documented in [the dashboard guide](../Dashboard/README.md); the descriptions below reflect earlier development.
+
+This directory organizes all earlier experimental sketches, exploratory prototypes, and initial topology experiments developed prior to consolidation into the unified production firmware [`Code/brick/brick.ino`](../brick/brick.ino).
 
 ---
 
@@ -8,10 +10,10 @@ This directory organizes all earlier experimental sketches, exploratory prototyp
 
 | Directory / File | Description & Scope | Key Hardware Tested | Replaced By |
 | :--- | :--- | :--- | :--- |
-| [`Prototypes/espNow_connection/`](Prototypes/espNow_connection/) | Initial 2-node ESP-NOW broadcast prototype. Verified wireless packet transmission without Wi-Fi AP association. | ESP32 Dev Modules (WiFi) | Consolidated into [`brick.ino`](../brick.ino) |
-| [`Prototypes/brick_0.1/`](Prototypes/brick_0.1/) | Two-brick interaction test. Read local RFID UID, flashed Blue LED on packet reception, and illuminated Green LED when tag detected. | MFRC522 (VSPI), RGB LED | Consolidated into [`brick.ino`](../brick.ino) |
-| [`Prototypes/Proximity_Mesh/`](Prototypes/Proximity_Mesh/) | Multi-node mesh using packet RSSI signal strength with Exponential Moving Average (EMA) smoothing and adaptive proximity thresholding. | ESP32 ESP-NOW RSSI, Dual LEDs | Consolidated into [`brick.ino`](../brick.ino) |
-| [`smart_brick_topology/`](smart_brick_topology/) | Cardinal 4-face (North, East, South, West) docking topology matrix with neighbor table aging and timeout eviction. | ESP-NOW, MFRC522, RGB LED | Consolidated into [`brick.ino`](../brick.ino) |
+| [`Prototypes/espNow_connection/`](Prototypes/espNow_connection/) | Initial 2-node ESP-NOW broadcast prototype. Verified wireless packet transmission without Wi-Fi AP association. | ESP32 Dev Modules (WiFi) | Consolidated into [`brick/brick.ino`](../brick/brick.ino) |
+| [`Prototypes/brick_0.1/`](Prototypes/brick_0.1/) | Two-brick interaction test. Read local RFID UID, flashed Blue LED on packet reception, and illuminated Green LED when tag detected. | MFRC522 (VSPI), RGB LED | Consolidated into [`brick/brick.ino`](../brick/brick.ino) |
+| [`Prototypes/Proximity_Mesh/`](Prototypes/Proximity_Mesh/) | Multi-node mesh using packet RSSI signal strength with Exponential Moving Average (EMA) smoothing and adaptive proximity thresholding. | ESP32 ESP-NOW RSSI, Dual LEDs | Consolidated into [`brick/brick.ino`](../brick/brick.ino) |
+| [`smart_brick_topology/`](smart_brick_topology/) | Cardinal 4-face (North, East, South, West) docking topology matrix with neighbor table aging and timeout eviction. | ESP-NOW, MFRC522, RGB LED | Consolidated into [`brick/brick.ino`](../brick/brick.ino) |
 | [`Prototypes/PROTOTYPE_INST.md`](Prototypes/PROTOTYPE_INST.md) | Original prototype instructions and color legends for the 2-brick experimental testbed. | Documentation | Superseded by [`INSTRUCTIONS.MD`](../INSTRUCTIONS.MD) |
 
 ---

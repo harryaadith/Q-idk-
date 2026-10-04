@@ -1,6 +1,6 @@
 # Wireless Smart Surgery Tray
 
-All production sketches now use identical firmware. Open an individual sketch folder, for example `Code/brick_1/brick_1.ino`, in Arduino IDE and upload the same version to every ESP32. Install the MFRC522 library and use ESP32 Arduino core 3.x (the receive callback uses its API). DashboardPage.h must remain beside the sketch. Old two-byte packet firmware is incompatible; reflash all bricks together. Firmware has not yet been fully board-compiled or tested on hardware.
+The single production sketch is `Code/brick/brick.ino`. Open it in Arduino IDE and upload the same version to every ESP32. Install the MFRC522 library and use ESP32 Arduino core 3.x (the receive callback uses its API). DashboardPage.h must remain beside the sketch. Old two-byte packet firmware is incompatible; reflash all bricks together. Firmware has not yet been fully board-compiled or tested on hardware.
 
 ## Connecting
 
@@ -18,7 +18,7 @@ The compass supports flat-table 2D offset/scale calibration, saved separately on
 
 ## Editing and verification
 
-Edit `Code/Dashboard/dashboard.html` and `dashboard.js`, then run `python3 Code/Dashboard/embed.py` to regenerate the embedded headers before reflashing. Production `.ino` copies are identical and must remain synchronized when editing firmware. Host checks covered identity arrival order, duplicate packets, self/incompatible-packet rejection, timeout/rejoin, registry capacity, gateway election/failover, and dashboard rendering/renumbering/stale states. Full firmware compilation, radio coexistence, real face signals, heading mounting, compass calibration, hotspot failover, and instrument scans still need hardware verification.
+Edit `Code/Dashboard/dashboard.html` and `dashboard.js`, then run `python3 Code/Dashboard/embed.py` to regenerate the embedded headers before reflashing. Edit firmware only in `Code/brick/brick.ino`; the generator writes its embedded header to `Code/brick/DashboardPage.h`. Host checks covered identity arrival order, duplicate packets, self/incompatible-packet rejection, timeout/rejoin, registry capacity, gateway election/failover, and dashboard rendering/renumbering/stale states. Full firmware compilation, radio coexistence, real face signals, heading mounting, compass calibration, hotspot failover, and instrument scans still need hardware verification.
 
 ## AI usage
 

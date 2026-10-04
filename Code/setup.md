@@ -44,14 +44,10 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 
 ## 2. Firmware Flashing Instructions
 
-1. Open [`Code/brick.ino`](brick.ino) (or [`Code/brick/brick.ino`](brick/brick.ino)) in the **Arduino IDE**.
+1. Open [`Code/brick/brick.ino`](brick/brick.ino) in the **Arduino IDE**.
 2. Install the **MFRC522** library via Arduino Library Manager (by *GithubCommunity* / *miguelbalboa*).
 3. Select your ESP32 board: **Tools > Board > ESP32 Dev Module**.
-4. Set the `BRICK_ID` macro at line 35 of the sketch before uploading to each board:
-   - First Brick: `#define BRICK_ID 1`
-   - Second Brick: `#define BRICK_ID 2`
-   - Third Brick: `#define BRICK_ID 3`
-   - Fourth Brick: `#define BRICK_ID 4`
+4. Use ESP32 Arduino core 3.x. Keep `DashboardPage.h` in the sketch folder; no per-board ID edits are needed.
 5. Upload to each respective ESP32 brick.
 6. Open the Serial Monitor at **115200 baud** to view real-time neighbor detection, IMU orientation, and face docking logs.
 
@@ -75,7 +71,7 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 
 ## 4. Repository Layout
 
-- [`brick.ino`](brick.ino) & [`brick/brick.ino`](brick/brick.ino): Unified production firmware with MPU9250 and ERM motor support.
+- [`brick/brick.ino`](brick/brick.ino): Unified production firmware with MPU9250 and ERM motor support.
 - [`INSTRUCTIONS.MD`](INSTRUCTIONS.MD): Complete system architecture, wiring guides, transistor schematics, and pinout matrix.
 - [`setup.md`](setup.md): Quickstart and flashing guide.
 - [`tests/`](tests/): Multi-agent simulation and automated test scripts (`test_brick_logic.py`, 7/7 passing).
@@ -83,4 +79,4 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 
 ## Wireless dashboard update
 
-The manual BRICK_ID instructions above are superseded by automatic hardware identities. See [wireless setup and limitations](Dashboard/README.md). Reflash all boards with the new identical sketches; their radio packet format is incompatible with the earlier firmware.
+Hardware identities and display numbers are assigned automatically. See [wireless setup and limitations](Dashboard/README.md). Reflash all boards with the new identical sketches; their radio packet format is incompatible with the earlier firmware.

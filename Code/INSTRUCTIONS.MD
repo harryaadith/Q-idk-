@@ -207,24 +207,11 @@ Open the **Arduino IDE** (or `arduino-cli`):
 *(Note: `<Wire.h>` for MPU9250 is already built into the ESP32 core).*
 
 ### Step 2: Open the Sketch
-Open [`Code/brick.ino`](brick.ino) or [`Code/brick/brick.ino`](brick/brick.ino).
+Open [`Code/brick/brick.ino`](brick/brick.ino), keeping `DashboardPage.h` beside it. Use ESP32 Arduino core 3.x.
 
-### Step 3: Configure `BRICK_ID` for Each Board
-At the top of [`brick.ino`](brick.ino), adjust line 35:
+### Step 3: Use the Same Firmware on Every Board
 
-```cpp
-// Flash Board 1:
-#define BRICK_ID 1
-
-// Flash Board 2:
-#define BRICK_ID 2
-
-// Flash Board 3:
-#define BRICK_ID 3
-
-// Flash Board 4:
-#define BRICK_ID 4
-```
+No manual `BRICK_ID` edits are needed. Each ESP32 uses its hardware MAC identity and computes a display number from the active group. Display numbers can change when bricks join or leave. Reflash all boards because old packet formats are incompatible. See the [wireless dashboard guide](Dashboard/README.md).
 
 ### Step 4: Flash the Board
 1. Connect the ESP32 to your PC via Micro-USB.

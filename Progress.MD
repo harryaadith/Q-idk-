@@ -2,7 +2,7 @@
 
 **Project:** Autonomous Multi-Agent Smart Bricks (Microbots)  
 **Team:** Team 22 (*Q-idk-if-i-m-getting-an-internship*) — Electronic System Workshop (ESW)  
-**Firmware File:** [`Code/brick/brick.ino`](Code/brick/brick.ino) *(synchronized with [`Code/brick.ino`](Code/brick.ino))*  
+**Firmware File:** [`Code/brick/brick.ino`](Code/brick/brick.ino)
 **Target Platform:** ESP32 Dev Module (30-Pin & 38-Pin Form Factors, all pins strictly $\le 35$)
 
 ---

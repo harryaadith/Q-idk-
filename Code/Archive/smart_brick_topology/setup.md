@@ -1,3 +1,5 @@
+> Historical setup guide. For current dynamic identities and wireless operation, use [the dashboard guide](../../Dashboard/README.md).
+
 # Multi-Agent Smart Bricks (Microbots) — Setup & Quickstart Guide
 
 This guide describes how to configure, upload, and verify the unified **Microbot Swarm (Smart Bricks)** firmware on your 4 ESP32 modules.
@@ -26,7 +28,7 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 
 ## 2. Firmware Flashing Instructions
 
-1. Open [`Code/brick.ino`](brick.ino) (or [`Code/brick/brick.ino`](brick/brick.ino)) in the **Arduino IDE**.
+1. Open [`Code/brick/brick.ino`](../../brick/brick.ino) in the **Arduino IDE**.
 2. Install the **MFRC522** library via Arduino Library Manager (by *GithubCommunity* / *miguelbalboa*).
 3. Select your ESP32 board: **Tools > Board > ESP32 Dev Module**.
 4. Set the `BRICK_ID` macro at line 32 of the sketch before uploading to each board:
@@ -56,7 +58,7 @@ For complete schematics, circuit diagrams, and future expansion plans, refer to 
 
 ## 4. Repository Layout
 
-- [`brick.ino`](brick.ino) & [`brick/brick.ino`](brick/brick.ino): Unified production firmware.
+- [`brick/brick.ino`](../../brick/brick.ino): Unified production firmware.
 - [`INSTRUCTIONS.MD`](INSTRUCTIONS.MD): Detailed system architecture, schematics, and future hardware roadmap.
 - [`Archive/`](Archive/): Earlier prototype sketches and experimental implementations.
 - [`tests/`](tests/): Multi-agent simulation and automated test scripts.

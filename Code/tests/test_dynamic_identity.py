@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 root=Path(__file__).resolve().parents[2]
-s=(root/'Code/brick.ino').read_text()
+s=(root/'Code/brick/brick.ino').read_text()
 # Run the actual peer registry and identity functions with a host queue adapter.
 a=s[s.index('uint8_t displayNumber(uint64_t uid) {'):s.index('// Broadcast local state packet to all peers')]
 source='''#include <cstdint>

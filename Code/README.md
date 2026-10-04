@@ -1,5 +1,7 @@
 # Multi-Agent Microbots (Smart Bricks) — Embedded Firmware
 
+Upload the same [`brick/brick.ino`](brick/brick.ino) to every board; identities and display numbers are automatic. See the [wireless dashboard guide](Dashboard/README.md) for current setup and validation limitations.
+
 This repository contains the complete embedded firmware and test suite for decentralized, multi-agent **Smart Bricks (Microbots)** running on **ESP32 Dev Modules** (compatible with both 30-pin and 38-pin boards).
 
 ---
@@ -26,9 +28,10 @@ Each microbot ("brick") operates as an autonomous node with no master controller
 
 ```
 Code/
-├── brick.ino               <-- Primary consolidated production sketch
 ├── brick/
-│   └── brick.ino           <-- Arduino IDE compatible sketch folder
+│   ├── brick.ino           <-- Single production sketch for every board
+│   └── DashboardPage.h     <-- Generated dashboard assets
+├── Dashboard/             <-- HTML, JavaScript, embedding script & wireless guide
 ├── INSTRUCTIONS.MD         <-- Complete wiring diagrams, circuit pinouts & user guide
 ├── setup.md                <-- Quickstart and flashing guide
 ├── README.md               <-- Project overview & documentation guidelines
