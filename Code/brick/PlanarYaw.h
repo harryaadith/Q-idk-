@@ -32,7 +32,7 @@ public:
     const float magnitude = std::sqrt(ax*ax + ay*ay + az*az);
     const bool gravityLike = finite && magnitude > .75f && magnitude < 1.25f;
     uint32_t dt = haveSample_ ? now - last_ : 0;
-    bool gap = haveSample_ && dt > 500;
+    bool gap = haveSample_ && dt > 2500;
     last_ = now; haveSample_ = true;
     if (state_ == Calibrating) {
       bool still = gravityLike && std::fabs(gx) < 20 && std::fabs(gy) < 20 && std::fabs(gz) < 20;
@@ -64,9 +64,9 @@ public:
       }
       return;
     }
-    // Accept up to 20 degrees of tilt from the calibrated pose, including tilted sensor mounts.
+    // Accept up to 45 degrees of tilt from the calibrated pose, including tilted sensor mounts.
     const float dot = gravityLike ? (ax*gravity_[0]+ay*gravity_[1]+az*gravity_[2])/magnitude : 0;
-    if (!gravityLike || gap || dot < .9396926f ||
+    if (!gravityLike || gap || dot < .7071068f ||
         std::fabs(gx) >= 240 || std::fabs(gy) >= 240 || std::fabs(gz) >= 240) {
       state_ = TrackingLost; return;
     }

@@ -32,7 +32,7 @@ Each brick broadcasts telemetry over ESP-NOW on Wi-Fi channel 1. After discovery
 
 The dashboard shows an inferred 2D tray configuration using relative gyro yaw and occupied faces, alongside live brick/RFID cards. No magnetometer is required. **Inference assumes all marked N faces share a starting direction, bricks move along the tray plane, orientations are multiples of 90 degrees, all online bricks form one connected square-grid tray, and occupied IR faces touch only other bricks.** A unique fit is conditional on these assumptions, not independently measured peer identity. When several fits exist, select an alternative and optionally confirm it after checking the physical tray.
 
-The gyroscope tracks changes in yaw from startup alignment. It has no absolute magnetic reference and drifts; physically realign all N marks and restart alignment whenever drift is noticeable. If samples are lost, the board tilts more than 20° from its calibrated pose, or the gyro saturates, tracking becomes invalid instead of guessing missed turns.
+The gyroscope tracks changes in yaw from startup alignment. It has no absolute magnetic reference and drifts; physically realign all N marks and restart alignment whenever drift is noticeable. If samples are lost for over 2.5 seconds, the board tilts more than 45° from its calibrated pose, or the gyro saturates, tracking becomes invalid instead of guessing missed turns.
 
 ## 2. Parts and software
 
@@ -235,7 +235,7 @@ Test a brick alone first. After power-on, keep it supported and still for at lea
 8. Return the marked N face to the reference direction. Click **Realign all bricks / zero gyro yaw** and keep still for at least five seconds. Alone, this resets only the visible board; in a group the reset is broadcast to directly heard peers.
 9. Repeat this sensor check for each board. When starting the full tray, physically align all marked N faces again; individual zero references must correspond to the same direction.
 
-The IMU can be mounted at any fixed angle, including sideways. Calibration requires total acceleration magnitude between 0.85 and 1.15 g, gyro XYZ rates below 3 degrees/s, standard deviation at most 0.15 degrees/s on each gyro axis, and stable acceleration (sum of axis variances at most 0.0025 g²) for three seconds with at least 20 samples. There is no overall calibration timeout. The tracker subtracts all three gyro biases and projects angular velocity onto measured gravity to track clockwise rotation. During tracking it tolerates up to 20° of tilt from the calibrated pose; larger tilts require realignment. Support the bricks in their normal tray position during calibration; their IMUs need not be exactly level. These software checks do not prove the operator actually aligned all N marks; constant slow motion during bias calibration can produce a wrong reference, so keep still.
+The IMU can be mounted at any fixed angle, including sideways. Calibration requires total acceleration magnitude between 0.75 and 1.25 g, gyro XYZ rates below 20 degrees/s (accommodating factory zero-rate bias tolerances), standard deviation at most 0.60 degrees/s on each gyro axis (variance at most 0.36 deg²/s² to tolerate Wi-Fi RF power rail ripple), and stable acceleration (sum of axis variances at most 0.01 g²) for three seconds with at least 20 samples. There is no overall calibration timeout. The tracker subtracts all three gyro biases and projects angular velocity onto measured gravity to track clockwise rotation. During tracking it tolerates up to 45° of tilt from the calibrated pose and sample gaps up to 2.5 seconds without losing tracking; larger tilts or extended sensor dropouts require realignment. Support the bricks in their normal tray position during calibration; their IMUs need not be exactly level. These software checks do not prove the operator actually aligned all N marks; constant slow motion during bias calibration can produce a wrong reference, so keep still.
 
 ## 9. Start the complete tray
 
@@ -469,7 +469,7 @@ Close the browser and turn off each board's supply. Gyro reference/bias, last-re
 Current limits:
 
 - The map is inferred under aligned-start, 90-degree, connected-grid and correct-IR assumptions; some physical arrangements are ambiguous and are presented as alternatives. Direct face identities and absolute table coordinates are not measured.
-- The design assumes motion along the tray plane; the IMU may have any fixed mounting angle. Tilt tolerance is 20° from the calibrated pose. Gyro yaw drifts and needs a common starting orientation, periodic realignment and fresh samples; no magnetometer correction is used.
+- The design assumes motion along the tray plane; the IMU may have any fixed mounting angle. Tilt tolerance is 45° from the calibrated pose. Gyro yaw drifts and needs a common starting orientation, periodic realignment and fresh samples; no magnetometer correction is used.
 - ESP-NOW is used for direct single-hop broadcasts; there is no multi-hop routing or robust distributed consensus under partitions.
 - Gateway changes can interrupt laptop connectivity and require manual Wi-Fi reconnection.
 - Display numbers may change; hardware UID is the stable identity.

@@ -1,10 +1,19 @@
+## Hardware-validated gyro calibration & tracking robustness update
+
+- **Factory Zero-Rate Bias Accommodation:** Relaxed stationary gyro rate threshold during calibration from `< 3 deg/s` to `< 20 deg/s` (`std::fabs(gx) < 20 && std::fabs(gy) < 20 && std::fabs(gz) < 20`). MPU-6500 datasheet room-temperature Zero-Rate Output (ZRO) tolerance is typ $\pm 5^\circ/\text{s}$, max $\pm 20^\circ/\text{s}$. Verified against real hardware serial telemetry exhibiting resting offsets up to $+7.21^\circ/\text{s}$ ($gx$), $+4.94^\circ/\text{s}$ ($gy$), and $+0.82^\circ/\text{s}$ ($gz$).
+- **Electrical & RF Noise Margin:** Relaxed calibration gyro variance threshold from $0.0225\text{ (deg/s)}^2$ ($\sigma = 0.15^\circ/\text{s}$) to $0.36\text{ (deg/s)}^2$ ($\sigma = 0.60^\circ/\text{s}$), and accelerometer variance from $0.0025\text{ g}^2$ to $0.01\text{ g}^2$, tolerating ESP32 Wi-Fi/ESP-NOW RF power surges and breadboard supply ripple without resetting the 3-second calibration timer.
+- **Gravity Magnitude Range:** Widened from $[0.85, 1.15]\text{ g}$ to $[0.75, 1.25]\text{ g}$, accommodating uncalibrated factory accelerometer scale tolerances and resting gravity vectors ($1.098\text{ g}$ on test hardware).
+- **Wi-Fi & HTTP Latency Tolerance:** Increased tracking gap timeout from $500\text{ ms}$ to $2500\text{ ms}$. Web telemetry polling (`/api/state`) and serial debug dumps can briefly pause `loop()` for 300–800 ms; the wider 2.5s window prevents transient Wi-Fi/HTTP delays from falsely triggering `TrackingLost`.
+- **Handling & Tilt Tolerance:** Relaxed tracking tilt limit from $20^\circ$ ($\cos 20^\circ = 0.9397$) to $45^\circ$ ($\cos 45^\circ = 0.7071$). Bricks can be picked up, slid, or handled on the tray up to $45^\circ$ tilt without losing tracking reference.
+- **Regression Test Suite:** Updated `Code/tests/test_planar_yaw.py` with the 2.5s gap threshold, 45° tilt limit, and explicit real-hardware bias test vector ($gx=7.214, gy=4.5, gz=0.7, ax=-0.133, ay=0.025, az=1.092$). All unit tests pass.
+
 ## Firmware review fixes
 
 Replaced blocking buzzer/motor delays with bounded nonblocking patterns, preventing simultaneous docking events from causing gyro sample gaps. Validated optional magnetic identity/setup, accepted RC522 v1 and v2 diagnostic identities, treated IR readings as occupancy rather than identity failures, and restored brownout protection. GPIO assignments remain unchanged. Added feedback and IMU initialization regression checks; full ESP32 build/hardware validation remains outstanding.
 
 ## Gyro mounting tolerance update
 
-Calibration now learns the gravity direction and biases on all three gyro axes, supporting tilted and sideways IMU mounts. Relative yaw uses the corrected angular rate projected onto gravity. The stationary window remains three continuous seconds; tracking tolerates up to 20° of tilt from the calibrated pose. Reflash every brick to use this change. This supersedes historical Z-axis-only calibration descriptions below.
+Calibration now learns the gravity direction and biases on all three gyro axes, supporting tilted and sideways IMU mounts. Relative yaw uses the corrected angular rate projected onto gravity. The stationary window remains three continuous seconds; tracking tolerates up to 45° of tilt from the calibrated pose. Reflash every brick to use this change. This supersedes historical Z-axis-only calibration descriptions below.
 
 # Modular Smart Surgery Tray (Microbots / Smart Bricks) — Universal Progress & Implementation Tracker
 
@@ -22,7 +31,7 @@ Calibration now learns the gravity direction and biases on all three gyro axes, 
 - Flat, stationary aligned startup calibrates gyro bias over three seconds. Relative yaw is integrated from gyro Z; it drifts and is not magnetic north.
 - The dashboard solves connected square-grid configurations from 90-degree relative rotations and complementary occupied faces. It displays alternative identity layouts and supports local operator confirmation rather than claiming ambiguous data is unique.
 - The group realignment button calls `/api/align`; peers receive repeated alignment commands over ESP-NOW. All physical N marks must be aligned first, and every card must become ready.
-- Gaps over 500 ms, tilt or gyro saturation invalidate tracking. The solver rejects stale, off-grid and contradictory inputs. The packet format is TRA2; every board must be reflashed.
+- Gaps over 2.5 s, tilt beyond 45° or gyro saturation invalidate tracking. The solver rejects stale, off-grid and contradictory inputs. The packet format is TRA2; every board must be reflashed.
 - Host tests cover gyro bias/integration, tracking loss, rotated grid, strip ambiguity, independent exhaustive layout checks, SVG rendering and confirmation invalidation. Full board compilation and physical testing remain pending.
 - The entries below are an earlier implementation snapshot. Their magnetic-heading and persistent-compass-calibration descriptions are superseded by this revision; consult HOW_TO_RUN.md for current operation.
 

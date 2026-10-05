@@ -14,9 +14,10 @@ int main() {
  PlanarYaw yaw;assert(!yaw.valid(0));calibrate(yaw);assert(std::fabs(yaw.bias()-.5f)<.001);
  for(uint32_t t=3200;t<=4100;t+=100) yaw.sample(t,0,0,1,0,0,-89.5);
  assert(std::fabs(yaw.yaw()-90)<.01);assert(yaw.valid(4100));assert(!yaw.valid(4700));
- yaw.sample(4800,0,0,1,0,0,.5);assert(yaw.state()==PlanarYaw::TrackingLost);
- yaw.sample(4900,0,0,1,0,0,.5);assert(!yaw.valid(4900));
- yaw.reset();calibrate(yaw);yaw.sample(3200,.4,0,.9,0,0,.5);assert(yaw.state()==PlanarYaw::TrackingLost);
+ yaw.sample(5600,0,0,1,0,0,.5);assert(yaw.state()==PlanarYaw::Ready); // 1.5s gap tolerated
+ yaw.sample(8300,0,0,1,0,0,.5);assert(yaw.state()==PlanarYaw::TrackingLost); // >2.5s gap causes TrackingLost
+ yaw.sample(8400,0,0,1,0,0,.5);assert(!yaw.valid(8400));
+ yaw.reset();calibrate(yaw);yaw.sample(3200,.8,0,.6,0,0,.5);assert(yaw.state()==PlanarYaw::TrackingLost); // >45 deg tilt
  yaw.reset();calibrate(yaw);yaw.sample(3200,0,0,1,0,0,245);assert(yaw.state()==PlanarYaw::TrackingLost);
  yaw.reset();calibrate(yaw,100,.5,-1);
  for(uint32_t t=3200;t<=4100;t+=100) yaw.sample(t,0,0,-1,0,0,90.5);
@@ -44,6 +45,8 @@ int main() {
  }
  yaw.reset();calibrate(yaw);yaw.sample(3200,.173648f,0,.984808f,0,0,.5);
  assert(yaw.state()==PlanarYaw::Ready); // 10-degree tilt is tolerated.
+ yaw.sample(3300,.5f,0,.866f,0,0,.5);
+ assert(yaw.state()==PlanarYaw::Ready); // 30-degree tilt is tolerated.
  yaw.reset();for(uint32_t t=100;t<=4000;t+=100) yaw.sample(t,0,0,0,0,0,0);
  assert(yaw.state()==PlanarYaw::Calibrating); // Free fall is not a valid reference.
  yaw.reset();for(uint32_t t=100;t<=4000;t+=100) yaw.sample(t,0,0,1,t%200 ? 1 : -1,0,0);
