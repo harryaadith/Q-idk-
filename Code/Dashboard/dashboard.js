@@ -48,6 +48,25 @@ function updateLayout(bricks) {
   lastBricks=bricks;layoutResult=TrayLayout.solve(bricks,{ignoreOrientation:true});
   updateLayoutStatus();drawLayout();
 }
+function updateInstrumentStatus(bricks=null) {
+  const output=document.getElementById("instrument-status");
+  if(!bricks || !bricks.length) {
+    output.setAttribute("data-state","unavailable");
+    output.textContent=bricks ? "Waiting for online bricks and instrument scans." : "Instrument placement unconfirmed — telemetry unavailable.";
+    return;
+  }
+  if(bricks.some(b=>!Number.isFinite(b.ageMs) || b.ageMs<0 || b.ageMs>1000)) {
+    output.setAttribute("data-state","unavailable");
+    output.textContent="Instrument placement unconfirmed — some brick readings are stale.";
+    return;
+  }
+  const scanned=bricks.filter(b=>typeof b.instrumentUid==="string" &&
+    /^[0-9A-F]{8,20}$/.test(b.instrumentUid) && b.instrumentUid.length%2===0).length;
+  output.setAttribute("data-state",scanned===bricks.length ? "complete" : "incomplete");
+  output.textContent=scanned===bricks.length ?
+    `All instruments placed — RFID scans recorded on all ${bricks.length} online bricks.` :
+    `Waiting for instruments — ${scanned} of ${bricks.length} online bricks have scanned an RFID card.`;
+}
 function render(state) {
   if (!state || !Array.isArray(state.bricks)) throw new Error("Invalid tray telemetry");
   const live = new Set(), current=[];
@@ -79,6 +98,7 @@ function render(state) {
   for (const [uid,card] of cards) if (!live.has(uid)) {
     card.classList.add("offline");card.querySelector(".scan").textContent="Offline / stale";
   }
+  updateInstrumentStatus(current);
   updateLayout(current);
   connection.textContent=`Connected · ${live.size} bricks online · ${layoutResult.status} layout inference`;
 }
@@ -90,6 +110,7 @@ async function poll() {
   } catch(error) {
     connection.textContent="Tray disconnected. Check Wi-Fi; a gateway change requires reconnecting to SmartSurgeryTray.";
     for(const card of cards.values()) card.classList.add("offline");
+    updateInstrumentStatus();
     layoutResult={layouts:[],reason:"Disconnected; last seen bricks have no current position readings."};updateLayoutStatus();drawLayout();
   } finally { setTimeout(poll,500); }
 }

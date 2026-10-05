@@ -51,3 +51,5 @@ These checks use host adapters and do not replace an ESP32 build or hardware acc
 Keep project code in `Code/`, demonstration material in `Demos/`, references in `Resources/`, and presentation deliverables in `Presentation/`. Document dependencies, reproducible setup, results and external sources before submission.
 
 Codex assisted with repository inspection, dynamic identity and wireless dashboard implementation, serial sensor diagnostics, cleanup and documentation. The requested scope was independently powered, identically flashed bricks with automatic numbering, rotation telemetry, an elected hotspot and opt-in sensor debugging. Current limitations and validation status are recorded in the run guide; no public chat link is available.
+
+The dashboard displays **All instruments placed** once every currently online brick has a recorded RFID scan. This is scan-based confirmation; instrument removal is not detected. Stale/disconnected telemetry makes placement unconfirmed, and rebooting a brick clears its scan record.

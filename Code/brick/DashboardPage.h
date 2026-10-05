@@ -2,10 +2,11 @@
 const char DASHBOARD_HTML[] PROGMEM = R"TRAYPAGE(<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Smart Surgery Tray</title><style>
-*{box-sizing:border-box}body{margin:0;background:#10191e;color:#edf6f6;font:16px system-ui}main{max-width:1100px;margin:auto;padding:30px}h1{margin-bottom:8px}.muted{color:#a2b8c0}#connection{padding:12px;background:#203038;border-radius:8px}#bricks{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-top:24px}article{background:#203038;padding:22px;border-radius:14px}article.offline{opacity:.45}.face-view{height:180px;display:grid;place-items:center}.square{position:relative;width:105px;height:105px;background:#386578;border:5px solid #608998;display:grid;place-items:center;transition:transform .3s}.face{position:absolute;background:#75878e}.face.occupied{background:#ffa33e}.n,.s{width:45px;height:9px;left:25px}.e,.w{height:45px;width:9px;top:25px}.n{top:-12px}.s{bottom:-12px}.e{right:-12px}.w{left:-12px}dl{display:grid;grid-template-columns:1fr 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}select{padding:10px;background:#203038;color:#edf6f6;border:1px solid #608998;border-radius:8px}button:disabled{opacity:.4;cursor:default}button{padding:10px;background:#b5e2ea;color:#10232b;border:0;border-radius:8px;cursor:pointer}aside{margin-top:25px;padding:18px;border:1px solid #ffae58;border-radius:10px}a{color:#b5e2ea}#tray-map{width:100%;height:360px;background:#17262e;border-radius:12px;margin-top:12px}#map-panel{margin-top:25px}.map-cell{fill:#386578;stroke:#608998;stroke-width:2}.map-unplaced{fill:#203038;stroke-dasharray:6 4}.map-face{stroke:#ffa33e;stroke-width:5}.map-label{fill:#edf6f6;font-size:12px;text-anchor:middle}.map-arrow{fill:#b5e2ea;font-size:12px;text-anchor:middle}.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}button,select{font:inherit}h2{font-size:20px}</style>
+*{box-sizing:border-box}body{margin:0;background:#10191e;color:#edf6f6;font:16px system-ui}main{max-width:1100px;margin:auto;padding:30px}h1{margin-bottom:8px}.muted{color:#a2b8c0}#connection{padding:12px;background:#203038;border-radius:8px}#instrument-status{padding:16px;border:1px solid #608998;border-radius:10px}#instrument-status[data-state="complete"]{background:#174c38;border-color:#65d9a5}#bricks{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-top:24px}article{background:#203038;padding:22px;border-radius:14px}article.offline{opacity:.45}.face-view{height:180px;display:grid;place-items:center}.square{position:relative;width:105px;height:105px;background:#386578;border:5px solid #608998;display:grid;place-items:center;transition:transform .3s}.face{position:absolute;background:#75878e}.face.occupied{background:#ffa33e}.n,.s{width:45px;height:9px;left:25px}.e,.w{height:45px;width:9px;top:25px}.n{top:-12px}.s{bottom:-12px}.e{right:-12px}.w{left:-12px}dl{display:grid;grid-template-columns:1fr 1fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}select{padding:10px;background:#203038;color:#edf6f6;border:1px solid #608998;border-radius:8px}button:disabled{opacity:.4;cursor:default}button{padding:10px;background:#b5e2ea;color:#10232b;border:0;border-radius:8px;cursor:pointer}aside{margin-top:25px;padding:18px;border:1px solid #ffae58;border-radius:10px}a{color:#b5e2ea}#tray-map{width:100%;height:360px;background:#17262e;border-radius:12px;margin-top:12px}#map-panel{margin-top:25px}.map-cell{fill:#386578;stroke:#608998;stroke-width:2}.map-unplaced{fill:#203038;stroke-dasharray:6 4}.map-face{stroke:#ffa33e;stroke-width:5}.map-label{fill:#edf6f6;font-size:12px;text-anchor:middle}.map-arrow{fill:#b5e2ea;font-size:12px;text-anchor:middle}.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}button,select{font:inherit}h2{font-size:20px}</style>
 <main><h1>Smart Surgery Tray</h1><p class="muted">Wireless brick telemetry · instruments are detected by top-facing RFID readers</p>
 <p id="connection" role="status">Connecting to tray…</p><button id="calibrate">Realign all bricks / zero gyro yaw</button><p id="calibration" role="status"></p>
 <aside><strong>IR-based 2D tray inference — no direction calibration needed</strong><p>The map uses occupied IR faces and ignores gyro directions. It automatically draws one possible connected square-grid arrangement, inferring rotations for display. IR detections should be caused only by adjoining bricks; occupied faces do not identify touching peers.</p></aside>
+<p id="instrument-status" role="status" data-state="unavailable">Waiting for online bricks and instrument scans.</p><p class="muted">Placement is confirmed by a recorded RFID scan on each online brick. Removing an instrument is not detected; scan records reset when a brick restarts.</p>
 <section id="map-panel" aria-label="Inferred tray configuration"><h2>2D tray configuration</h2><p id="layout-status" role="status">Waiting for IR telemetry…</p><svg id="tray-map" viewBox="0 0 640 360" role="img" aria-label="Inferred brick positions"></svg><p class="muted">Up is an arbitrary drawing direction. Arrows show inferred local N faces, not measured compass directions. When multiple layouts fit, one is displayed automatically and marked uncertain. Bricks with unresolved positions are shown separately with dashed outlines; their spacing is not physical.</p></section>
 <section id="bricks" aria-label="Brick telemetry"></section><p class="muted">Numbers are assigned from live hardware identities and may change when bricks join or leave. Gyro yaw requires aligned startup, motion along the tray plane, periodic realignment and working accel/gyro. Tilting over 20° from the calibrated pose, sample gaps or saturation can invalidate tracking. RFID UID is the last scan, not proof an instrument is still present.</p></main><script src="/layout.js"></script><script src="/dashboard.js"></script></html>)TRAYPAGE";
 const char DASHBOARD_JS[] PROGMEM = R"TRAYPAGE("use strict";
@@ -58,6 +59,25 @@ function updateLayout(bricks) {
   lastBricks=bricks;layoutResult=TrayLayout.solve(bricks,{ignoreOrientation:true});
   updateLayoutStatus();drawLayout();
 }
+function updateInstrumentStatus(bricks=null) {
+  const output=document.getElementById("instrument-status");
+  if(!bricks || !bricks.length) {
+    output.setAttribute("data-state","unavailable");
+    output.textContent=bricks ? "Waiting for online bricks and instrument scans." : "Instrument placement unconfirmed — telemetry unavailable.";
+    return;
+  }
+  if(bricks.some(b=>!Number.isFinite(b.ageMs) || b.ageMs<0 || b.ageMs>1000)) {
+    output.setAttribute("data-state","unavailable");
+    output.textContent="Instrument placement unconfirmed — some brick readings are stale.";
+    return;
+  }
+  const scanned=bricks.filter(b=>typeof b.instrumentUid==="string" &&
+    /^[0-9A-F]{8,20}$/.test(b.instrumentUid) && b.instrumentUid.length%2===0).length;
+  output.setAttribute("data-state",scanned===bricks.length ? "complete" : "incomplete");
+  output.textContent=scanned===bricks.length ?
+    `All instruments placed — RFID scans recorded on all ${bricks.length} online bricks.` :
+    `Waiting for instruments — ${scanned} of ${bricks.length} online bricks have scanned an RFID card.`;
+}
 function render(state) {
   if (!state || !Array.isArray(state.bricks)) throw new Error("Invalid tray telemetry");
   const live = new Set(), current=[];
@@ -89,6 +109,7 @@ function render(state) {
   for (const [uid,card] of cards) if (!live.has(uid)) {
     card.classList.add("offline");card.querySelector(".scan").textContent="Offline / stale";
   }
+  updateInstrumentStatus(current);
   updateLayout(current);
   connection.textContent=`Connected · ${live.size} bricks online · ${layoutResult.status} layout inference`;
 }
@@ -100,6 +121,7 @@ async function poll() {
   } catch(error) {
     connection.textContent="Tray disconnected. Check Wi-Fi; a gateway change requires reconnecting to SmartSurgeryTray.";
     for(const card of cards.values()) card.classList.add("offline");
+    updateInstrumentStatus();
     layoutResult={layouts:[],reason:"Disconnected; last seen bricks have no current position readings."};updateLayoutStatus();drawLayout();
   } finally { setTimeout(poll,500); }
 }

@@ -265,11 +265,13 @@ No USB, router, Internet, local server or cloud account is needed during normal 
 | Unplaced bricks | Dashed outlines and position-unknown labels when no layout fits |
 | Unknown / realign | Gyro reference unavailable/calibrating, stale samples or tracking loss |
 | Last instrument UID | Most recently read top-facing RFID tag |
+| All instruments placed | Every currently online brick has a recorded RFID scan; scan-based confirmation, not continuous presence |
+| Waiting for instruments | Shows scanned/online count; joining or rebooted bricks need a scan |
 | Just scanned | Recent scan indication, not a continuous instrument-presence measurement |
 | Faded card | Offline/stale peer or lost connection |
 | No matching layout | Readings violate the connected-grid assumptions; inspect missing peers, IR and alignment |
 
-The UI retains offline cards as faded records. Display numbers are not permanent instrument IDs. The firmware does not map UIDs to instrument names, count tray completeness, or verify instrument removal. The on-board/RGB proximity consensus indicates radio proximity to active peers; it is not proof that a complete tray is assembled.
+The UI retains offline cards as faded records. Display numbers are not permanent instrument IDs. The dashboard reports scan coverage across currently online bricks: scan a card at each reader until the banner says **All instruments placed**. It uses each brick's last instrument UID, so confirmation persists after the two-second recent-scan indicator expires and survives browser refresh while bricks remain powered. Fresh telemetry is required; disconnection or stale readings makes placement unconfirmed. A reboot clears that brick's scan record. This count covers currently online bricks, not a fixed required four-brick inventory. The same tag may be scanned on multiple bricks; instrument uniqueness, named inventory completeness and removal are not verified. The on-board/RGB proximity consensus indicates radio proximity to active peers; it is not proof that a complete tray is assembled.
 
 ## 11. Run acceptance checks
 
@@ -473,7 +475,7 @@ Current limits:
 - ESP-NOW is used for direct single-hop broadcasts; there is no multi-hop routing or robust distributed consensus under partitions.
 - Gateway changes can interrupt laptop connectivity and require manual Wi-Fi reconnection.
 - Display numbers may change; hardware UID is the stable identity.
-- Instrument names, continuous presence/removal detection, completeness checking and persistent inventory are not implemented.
+- Instrument names, continuous presence/removal detection, named inventory completeness checking and persistent inventory are not implemented; online scan coverage is displayed.
 - The wireless/password defaults and prototype hardware require assessment before any actual clinical use; this repository does not establish surgical safety or sterilization suitability.
 - Real ESP32 compilation and hardware acceptance remain outstanding until someone performs the build and checks described above.
 

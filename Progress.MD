@@ -1,3 +1,7 @@
+## Instrument scan coverage banner
+
+The dashboard shows scanned/online counts and an All instruments placed banner when every currently online brick has a recorded valid RFID UID. Confirmation persists beyond the recent-scan flag, becomes unconfirmed on stale/disconnected telemetry, and returns to pending for a newly joined or rebooted unscanned brick. This is scan history, not continuous instrument presence or fixed inventory completeness. Added dashboard regression checks; regenerated embedded assets.
+
 ## IR-only possible layout
 
 The dashboard now ignores gyro readiness and measured directions when positioning bricks. It infers rotations from local IR masks and displays the first possible connected-grid layout automatically. Every two-brick single-face combination is tested, including N/S with unavailable gyro. Drawing directions are arbitrary; physical face identity remains unresolved.
