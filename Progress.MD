@@ -1,3 +1,11 @@
+## IR-only possible layout
+
+The dashboard now ignores gyro readiness and measured directions when positioning bricks. It infers rotations from local IR masks and displays the first possible connected-grid layout automatically. Every two-brick single-face combination is tested, including N/S with unavailable gyro. Drawing directions are arbitrary; physical face identity remains unresolved.
+
+## Automatic dashboard layout
+
+The dashboard automatically displays the first deterministic fitting configuration, without candidate selection or confirmation. Multiple fits remain labelled uncertain. Unresolved bricks are drawn separately with dashed outlines and position-unknown labels; display spacing is not a physical arrangement. Updated embedded firmware assets and dashboard regression checks.
+
 ## Hardware-validated gyro calibration & tracking robustness update
 
 - **Factory Zero-Rate Bias Accommodation:** Relaxed stationary gyro rate threshold during calibration from `< 3 deg/s` to `< 20 deg/s` (`std::fabs(gx) < 20 && std::fabs(gy) < 20 && std::fabs(gz) < 20`). MPU-6500 datasheet room-temperature Zero-Rate Output (ZRO) tolerance is typ $\pm 5^\circ/\text{s}$, max $\pm 20^\circ/\text{s}$. Verified against real hardware serial telemetry exhibiting resting offsets up to $+7.21^\circ/\text{s}$ ($gx$), $+4.94^\circ/\text{s}$ ($gy$), and $+0.82^\circ/\text{s}$ ($gz$).

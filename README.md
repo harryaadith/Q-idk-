@@ -10,7 +10,7 @@ Start with [HOW_TO_RUN.md](HOW_TO_RUN.md) for wiring, software installation, com
 
 Upload the same [brick.ino](Code/brick/brick.ino) to every board. Hardware identities and display numbers are automatic. Join `SmartSurgeryTray` with password `smarttray22`, then open `http://192.168.4.1`.
 
-The dashboard infers a connected 2D square-grid layout from relative gyro yaw and face occupancy. Start supported and still with all N marks aligned; use 90-degree rotations. The IMU may have any fixed mounting angle; tracking tolerates up to 20° of tilt from the calibrated pose. Ambiguous layouts are shown as alternatives and can be confirmed by the operator. Gyro drift requires realignment; continuous instrument-presence detection remains unresolved. Host checks pass; full ESP32 compilation and physical operation still require verification.
+The dashboard infers a possible connected 2D square-grid layout from face occupancy alone, ignoring measured gyro directions. Gyro calibration is optional for the map. Start supported and still with all N marks aligned; use 90-degree rotations. The IMU may have any fixed mounting angle; tracking tolerates up to 20° of tilt from the calibrated pose. An ambiguous layout is displayed automatically and labelled uncertain; unresolved bricks remain visible as unplaced. Gyro drift requires realignment; continuous instrument-presence detection remains unresolved. Host checks pass; full ESP32 compilation and physical operation still require verification.
 
 For serial sensor diagnostics, open Serial Monitor at 115200 baud with a newline and send `--debug`. Details and other commands are in [the run guide](HOW_TO_RUN.md#serial-sensor-debug-mode).
 

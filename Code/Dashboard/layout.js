@@ -7,6 +7,7 @@
     return result;
   }
   function solve(bricks, limits={}) {
+    const ignoreOrientation=limits.ignoreOrientation === true;
     const maxStates=limits.maxStates ?? 75000, maxLayouts=limits.maxLayouts ?? 64;
     if(!bricks.length) return {status:"waiting",reason:"No bricks online.",layouts:[]};
     if(bricks.length>4) return {status:"invalid",reason:"This solver supports the intended four-brick tray.",layouts:[]};
@@ -18,6 +19,12 @@
         return {status:"invalid",reason:"Invalid or duplicate brick telemetry.",layouts:[]};
       }
       seen.add(brick.uid);
+      if(ignoreOrientation) {
+        if(!Number.isFinite(brick.ageMs) || brick.ageMs<0 || brick.ageMs>1000)
+          return {status:"waiting",reason:`Brick ${brick.number}: waiting for fresh IR readings.`,layouts:[]};
+        nodes.push({...brick,turns:0,worldMask:brick.faces});
+        continue;
+      }
       if(brick.orientationSource!=="gyro-relative" || brick.orientationState!==2 ||
          typeof brick.heading!=="number" || !Number.isFinite(brick.heading) ||
          !Number.isFinite(brick.ageMs) || brick.ageMs<0 || brick.ageMs>1000) {
@@ -62,18 +69,21 @@
         if(!unique.has(key)) {unique.add(key);layouts.push(layout.map(n=>({...n})));}
         return;
       }
-      for(const node of nodes) {
-        if(placements.has(node.uid) || !(node.worldMask&(1<<target.opposite))) continue;
-        if(!canPlace(node,target.x,target.y)) continue;
-        placements.set(node.uid,{...node,x:target.x,y:target.y});cells.set(`${target.x},${target.y}`,node.uid);
-        search();placements.delete(node.uid);cells.delete(`${target.x},${target.y}`);
-        if(truncated) return;
+      for(const original of nodes) {
+        if(placements.has(original.uid)) continue;
+        for(let turn=0;turn<(ignoreOrientation ? 4 : 1);turn++) {
+          const node=ignoreOrientation ? {...original,turns:turn,worldMask:rotateMask(original.faces,turn)} : original;
+          if(!(node.worldMask&(1<<target.opposite)) || !canPlace(node,target.x,target.y)) continue;
+          placements.set(node.uid,{...node,x:target.x,y:target.y});cells.set(`${target.x},${target.y}`,node.uid);
+          search();placements.delete(node.uid);cells.delete(`${target.x},${target.y}`);
+          if(truncated) return;
+        }
       }
     }
     search();
     let status=truncated ? "limited" : layouts.length===0 ? "inconsistent" : layouts.length===1 ? "unique" : "ambiguous";
     return {status,layouts,truncated,explored,fingerprint,reason:layouts.length ? "" :
-      "No connected grid fits these readings. Check missing bricks, false IR detections, face wiring, alignment and drift."};
+      (ignoreOrientation ? "No connected grid fits these IR readings. Check missing bricks, false detections or face wiring." : "No connected grid fits these readings. Check missing bricks, false IR detections, face wiring, alignment and drift.")};
   }
   root.TrayLayout={solve,rotateMask,directions};
   if(typeof module!=="undefined" && module.exports) module.exports=root.TrayLayout;

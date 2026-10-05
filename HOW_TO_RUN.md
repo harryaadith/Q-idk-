@@ -30,7 +30,7 @@ The intended application is a modular surgery-tray prototype: independently powe
 
 Each brick broadcasts telemetry over ESP-NOW on Wi-Fi channel 1. After discovery settles, the brick with the lowest live hardware identity hosts a Wi-Fi access point and serves the dashboard. Your laptop connects to that host, which reports its own data and the other bricks it can directly hear. The browser polls telemetry every 500 ms.
 
-The dashboard shows an inferred 2D tray configuration using relative gyro yaw and occupied faces, alongside live brick/RFID cards. No magnetometer is required. **Inference assumes all marked N faces share a starting direction, bricks move along the tray plane, orientations are multiples of 90 degrees, all online bricks form one connected square-grid tray, and occupied IR faces touch only other bricks.** A unique fit is conditional on these assumptions, not independently measured peer identity. When several fits exist, select an alternative and optionally confirm it after checking the physical tray.
+The dashboard automatically shows one possible 2D tray configuration from occupied IR faces alone, alongside live brick/RFID cards. **Gyro direction and calibration are not required for the map.** Drawing rotations are inferred rather than measured. For example, two bricks reporting North and South are joined even when heading is null; other one-face pairs can also be joined by inferring rotation. Inference assumes all online bricks form one connected square-grid tray and occupied IR faces touch only other bricks. Multiple fits are labelled uncertain. If no arrangement fits, bricks remain visible as unplaced with display-only spacing.
 
 The gyroscope tracks changes in yaw from startup alignment. It has no absolute magnetic reference and drifts; physically realign all N marks and restart alignment whenever drift is noticeable. If samples are lost for over 2.5 seconds, the board tilts more than 45° from its calibrated pose, or the gyro saturates, tracking becomes invalid instead of guessing missed turns.
 
@@ -190,7 +190,7 @@ python3 Code/Dashboard/embed.py
 On Windows, use `py -3 Code/Dashboard/embed.py` or your installed Python launcher. The script updates only `Code/brick/DashboardPage.h`; it creates no numbered sketches.
 
 1. In Arduino IDE choose **File → Open** and select `Code/brick/brick.ino`.
-2. Confirm these four files remain together:
+2. Confirm these five files remain together:
 
    ```text
    Code/brick/
@@ -239,17 +239,16 @@ The IMU can be mounted at any fixed angle, including sideways. Calibration requi
 
 ## 9. Start the complete tray
 
-1. Place all intended bricks flat, with **every marked N face pointing the same way**. No magnetic compass direction is required. You may begin with the bricks separated to make alignment easy.
-2. Power all boards and leave them still. If any board boots while rotated differently or its reference is uncertain, manually align all N marks and use the group realignment button after connecting.
-3. Wait about 10 seconds for initialization, three-second stationary calibration, discovery and gateway election.
-4. Join `SmartSurgeryTray`, password `smarttray22`, and open `http://192.168.4.1`.
-5. Verify the count matches the number powered and **every card reports ready relative yaw**. The realignment command is repeated over radio for one second but is not an acknowledged consensus protocol; if a peer missed it, realign again or reboot the aligned group.
-6. Keeping all bricks flat, assemble one connected tray on a square grid. Rotations should end at 0, 90, 180 or 270 degrees relative to the common start direction. The solver accepts yaw within 15 degrees of those positions; this tolerance does not eliminate drift.
-7. The **2D tray configuration** section displays a unique matching layout or offers possible layouts. The map's up direction is the initial shared N direction, not magnetic north. The lowest UID is used as a coordinate anchor; positions are relative rather than absolute table coordinates.
-8. If several layouts fit, use **Possible layout** to preview candidates. Compare their UID/brick labels with the physical tray, then optionally click **Confirm this candidate**. Confirmation is stored only in the current browser session and is cleared by geometry/membership changes, invalid readings, disconnection or realignment.
-9. If no connected layout fits, check whether an IR sensor sees a non-brick object, a brick is missing, a side is miswired, the group is disconnected or yaw has drifted. Do not confirm a guessed arrangement when inputs are inconsistent.
+1. Place and power the bricks on the table. No shared N alignment is required for the IR-only map.
+2. Wait about 10 seconds for initialization, discovery and gateway election.
+3. Join `SmartSurgeryTray`, password `smarttray22`, and open `http://192.168.4.1`.
+4. Verify the online count matches the number powered. Assemble one connected square-grid tray and verify that the touching IR faces light up.
+5. The map automatically displays a possible configuration from those IR faces. Up is an arbitrary drawing direction; local N arrows represent inferred rotations rather than measured gyro or compass direction.
+6. Multiple matching configurations are labelled uncertain. No selection or confirmation is needed; the first candidate is deterministic for unchanged UIDs and face readings.
+7. If no layout fits, check missing bricks, false IR detections, incorrect face wiring or a disconnected group. Bricks remain visible as unplaced.
+8. Gyro calibration and the realignment button remain available for sensor diagnostics. For meaningful relative yaw readings, start still with N marks aligned; yaw readiness does not control the map.
 
-No USB, router, Internet, local server or cloud account is needed during normal operation. All boards must run this revised TRA2 packet format; reflash every board, since old orientation packets are incompatible. Rebooted/newly joined boards must be physically aligned before reference calibration. If this cannot be done independently without disturbing the assembled tray, realign the entire group.
+No USB, router, Internet, local server or cloud account is needed during normal operation. All boards must run compatible TRA2 firmware. Reflash the gateway with the regenerated dashboard header to load these UI changes; using the same current sketch on every board is recommended.
 
 ## 10. Understand the dashboard
 
@@ -262,7 +261,8 @@ No USB, router, Internet, local server or cloud account is needed during normal 
 | Relative yaw | Clockwise angle from physically aligned startup, measured by gyro integration; can drift |
 | Orientation | Calibrating, ready, tracking lost, or IMU unavailable |
 | 2D tray configuration | Inferred relative grid positions matching current IR and snapped gyro rotations |
-| Possible layout | Alternative identity arrangements when the sensor data is ambiguous |
+| Automatic layout | One fitting candidate is displayed; ambiguity is labelled uncertain |
+| Unplaced bricks | Dashed outlines and position-unknown labels when no layout fits |
 | Unknown / realign | Gyro reference unavailable/calibrating, stale samples or tracking loss |
 | Last instrument UID | Most recently read top-facing RFID tag |
 | Just scanned | Recent scan indication, not a continuous instrument-presence measurement |
@@ -468,7 +468,7 @@ Close the browser and turn off each board's supply. Gyro reference/bias, last-re
 
 Current limits:
 
-- The map is inferred under aligned-start, 90-degree, connected-grid and correct-IR assumptions; some physical arrangements are ambiguous and are presented as alternatives. Direct face identities and absolute table coordinates are not measured.
+- The map ignores measured direction and is inferred under connected-grid and correct-IR assumptions; some physical arrangements are ambiguous; one candidate is automatically displayed and labelled uncertain. Direct face identities and absolute table coordinates are not measured.
 - The design assumes motion along the tray plane; the IMU may have any fixed mounting angle. Tilt tolerance is 45° from the calibrated pose. Gyro yaw drifts and needs a common starting orientation, periodic realignment and fresh samples; no magnetometer correction is used.
 - ESP-NOW is used for direct single-hop broadcasts; there is no multi-hop routing or robust distributed consensus under partitions.
 - Gateway changes can interrupt laptop connectivity and require manual Wi-Fi reconnection.

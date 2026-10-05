@@ -58,3 +58,14 @@ for(const sample of [grid,strip,[brick(1,6),brick(2,10),brick(3,8),brick(4,1)],
  assert.deepEqual(inferred,oracle(sample));
 }
 console.log('PASS: rotated grid, strip ambiguity, L-shape, contradictory/disconnected data, freshness, bounds, and independent exhaustive embedding oracle.');
+
+// IR-only mapping: all face pairs fit without ready gyro, even non-opposite local labels.
+for(const first of [1,2,4,8]) for(const second of [1,2,4,8]) {
+ const data=[{...brick(1,first),heading:null,orientationState:0},{...brick(2,second),heading:47,orientationState:1}];
+ const result=solve(data,{ignoreOrientation:true});
+ assert.equal(result.status,'unique');assert.equal(result.layouts[0].length,2);
+ const [a,b]=result.layouts[0];
+ assert.equal(Math.abs(a.x-b.x)+Math.abs(a.y-b.y),1);
+}
+assert.equal(solve([{...brick(1,1),ageMs:1001},brick(2,4)],{ignoreOrientation:true}).status,'waiting');
+console.log('PASS: every two-brick face pair fits without gyro orientation; stale IR data is rejected.');
