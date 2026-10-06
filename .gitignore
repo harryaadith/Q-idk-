@@ -5,3 +5,4 @@ __pycache__/
 Code/brick/build/
 .temp
 .DS_Store
+*uncompressed*
